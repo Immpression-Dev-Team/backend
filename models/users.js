@@ -38,6 +38,12 @@ const UserSchema = new Schema(
       minLength: [6, 'Password should be at least 6 characters'],
       maxLength: [30, 'Password should be less than 30 characters'],
     },
+    // Added Google ID field
+    googleId: {
+      type: String,
+      sparse: true, // Allows null/undefined values
+      unique: true, // But if provided, must be unique
+    },
     // Add a field for profile picture link
     profilePictureLink: {
       type: String,

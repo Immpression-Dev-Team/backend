@@ -16,6 +16,9 @@ import authRoutes from './routes/userAuthRoutes/userAuthRoutes.js';
 // Import image handling routes
 import imageRoutes from './routes/imageRoutes/imageRoutes.js';
 
+// Import googleAuthRoutes
+import googleAuthRoutes from './routes/googleAuthRoutes.js'; 
+
 // Import the MongoDB connection URL from config file
 import { MONGO_URL } from './config/config.js';
 
@@ -63,6 +66,9 @@ app.use('/', authRoutes);
 // Use image routes for root path
 app.use('/', imageRoutes);
 
+// Use googleAuthRoutes for root path
+app.use('/', googleAuthRoutes); 
+
 // Middleware to parse URL-encoded bodies in incoming requests
 app.use(bodyParser.urlencoded({ extended: false }));
 
@@ -98,3 +104,5 @@ app.listen(PORT, () => {
   // Log the server's URL
   console.log(`Server running at http://localhost:${PORT}`);
 });
+
+
