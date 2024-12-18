@@ -1,7 +1,7 @@
 {
   "name": "backend-immpression",
   "version": "1.0.0",
-  "description": "",
+  "description": "Welcome to Immpression!",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -30,5 +30,13 @@
     "nodemon": "^3.1.7",
     "playwright": "^1.49.0",
     "sharp": "^0.33.5"
+  },
+  "directories": {
+    "test": "tests"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.6.1",
+    "@commitlint/config-conventional": "^19.6.0",
+    "husky": "^9.1.7"
   }
 }
