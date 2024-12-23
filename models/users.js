@@ -69,6 +69,10 @@ const UserSchema = new Schema(
       },
       default: null,
     },
+    artCategories: {
+      type: [String],
+      default: [],
+    },
   },
   {
     // Add timestamps for createdAt and updatedAt

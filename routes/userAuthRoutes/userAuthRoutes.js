@@ -467,6 +467,44 @@ router.put('/set-artist-type', isUserAuthorized, async (request, response) => {
   }
 });
 
+// Endpoint to set or update the user's art type (art-lover)
+router.put(
+  '/set-art-categories',
+  isUserAuthorized,
+  async (request, response) => {
+    const userId = request.user.id;
+    console.log('reqqq', request.body);
+
+    try {
+      const user = await UserModel.findById(userId);
+
+      if (!user) {
+        return response.status(404).json({ message: 'User not found' });
+      }
+
+      user.artCategories = request.body;
+      await user.save();
+
+      // Make sure to return a proper success response
+      response
+        .status(200)
+        .json({
+          success: true,
+          message: 'Art categories updated successfully',
+        });
+    } catch (error) {
+      console.error(error);
+
+      // Return a clear error response
+      return response.status(400).json({
+        success: false,
+        message: 'Failed to update art categories',
+        error: error.message, // Include the error message for debugging
+      });
+    }
+  }
+);
+
 // Endpoint to get the user's artist type
 router.get('/get-artist-type', isUserAuthorized, async (request, response) => {
   try {
@@ -568,7 +606,6 @@ router.get('/get-views', async (req, res) => {
 router.post('/accountType', isUserAuthorized, async (req, res) => {
   const userId = req.user.id;
   const { accountType } = req.body;
-  console.log('userId, accountType', userId, accountType);
 
   try {
     const user = await UserModel.findById(userId);
