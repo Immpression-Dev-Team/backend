@@ -18,6 +18,9 @@ import { setAuthCookies, generateAuthToken } from '../../utils/authUtils.js';
 
 import { isUserAuthorized } from '../../utils/authUtils.js';
 
+import { OAuth2Client } from 'google-auth-library';
+import axios from 'axios';
+
 // Import dotenv
 import dotenv from 'dotenv';
 // Load environment variables from the .env file
@@ -33,6 +36,9 @@ cloudinary.v2.config({
 
 // Create a new Express router
 const router = express.Router();
+
+// Initialize Google OAuth client
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // Route for user signup
 router.post('/signup', async (request, response) => {
@@ -623,6 +629,102 @@ router.post('/accountType', isUserAuthorized, async (req, res) => {
       success: false,
       message: 'Failed to update account type',
       error,
+    });
+  }
+});
+
+// Google Authentication route
+router.post('/auth/google', async (request, response) => {
+  try {
+    const { token } = request.body;
+
+    // Verify Google token
+    const ticket = await googleClient.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+
+    const payload = ticket.getPayload();
+    const { email, name, picture } = payload;
+
+    // Check if user already exists
+    let user = await UserModel.findOne({ email });
+
+    if (!user) {
+      // Create new user if doesn't exist
+      user = await UserModel.create({
+        name,
+        email,
+        password: await bcrypt.hash(Math.random().toString(36), 10), // Generate random password
+        profilePictureLink: picture,
+        authProvider: 'google'
+      });
+    }
+
+    // Generate authentication token
+    const authToken = generateAuthToken(user._id);
+    
+    // Set authentication cookies
+    setAuthCookies(response, authToken);
+
+    response.status(200).json({
+      success: true,
+      message: 'Google login successful',
+      token: authToken,
+      user: { user }
+    });
+  } catch (error) {
+    console.error('Google authentication error:', error);
+    response.status(500).json({
+      success: false,
+      error: 'Google authentication failed'
+    });
+  }
+});
+
+// Facebook Authentication route
+router.post('/auth/facebook', async (request, response) => {
+  try {
+    const { accessToken } = request.body;
+
+    // Verify Facebook token and get user data
+    const fbResponse = await axios.get(
+      `https://graph.facebook.com/me?fields=id,name,email,picture&access_token=${accessToken}`
+    );
+
+    const { name, email, picture } = fbResponse.data;
+
+    // Check if user already exists
+    let user = await UserModel.findOne({ email });
+
+    if (!user) {
+      // Create new user if doesn't exist
+      user = await UserModel.create({
+        name,
+        email,
+        password: await bcrypt.hash(Math.random().toString(36), 10), // Generate random password
+        profilePictureLink: picture?.data?.url,
+        authProvider: 'facebook'
+      });
+    }
+
+    // Generate authentication token
+    const authToken = generateAuthToken(user._id);
+    
+    // Set authentication cookies
+    setAuthCookies(response, authToken);
+
+    response.status(200).json({
+      success: true,
+      message: 'Facebook login successful',
+      token: authToken,
+      user: { user }
+    });
+  } catch (error) {
+    console.error('Facebook authentication error:', error);
+    response.status(500).json({
+      success: false,
+      error: 'Facebook authentication failed'
     });
   }
 });
