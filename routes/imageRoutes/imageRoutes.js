@@ -145,6 +145,23 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
   }
 });
 
+// route to get limited images
+router.get('/limit_images', isUserAuthorized, async (request, response) => {
+  try {
+    const images = await ImageModel.find({}).limit(10)
+  
+    // Send JSON response
+    response.status(200).json({ success: true, images: images})
+  } catch (error) {
+    // Logging the error to the console
+    console.error('Error fetching images:', error);
+    // Sending an internal server error response to the client
+    response
+      .status(500)
+      .json({ success: false, error: 'Internal Server Error' });
+  }
+})
+
 // GET route for fetching an image by ID
 router.get('/image/:id', isUserAuthorized, async (request, response) => {
   try {
