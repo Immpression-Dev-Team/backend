@@ -1,16 +1,19 @@
-# Use the official Node.js image
-FROM node:20-alpine3.20
+# Use the latest lightweight Node.js image
+FROM node:20-alpine
 
 # Set the working directory
 WORKDIR /app
 
-# Copy the rest of the application code
-COPY . .
+# Copy only package.json to leverage Docker layer caching
+COPY package.json ./
 
-# Install dependencies
+# Install dependencies (this generates package-lock.json and node_modules)
 RUN npm install
 
-# Expose port 5000 (or whatever your API uses)
+# Copy the rest of the application code into the container
+COPY . .
+
+# Expose the application port
 EXPOSE 4000
 
 # Enable polling for file changes
