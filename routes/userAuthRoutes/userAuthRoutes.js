@@ -627,5 +627,35 @@ router.post('/accountType', isUserAuthorized, async (req, res) => {
   }
 });
 
+// Route for deleting a user account
+router.delete('/delete-account', isUserAuthorized, async (req, res) => {
+  try {
+    const userId = req.user._id; // Get the authenticated user's ID
+
+    // Find and delete the user from the database
+    const user = await UserModel.findByIdAndDelete(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+      });
+    }
+
+    console.log(`User ${userId} deleted from the database.`);
+
+    res.status(200).json({
+      success: true,
+      message: 'User account deleted successfully',
+    });
+  } catch (error) {
+    console.error('Error deleting user account:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal Server Error',
+    });
+  }
+});
+
 // Export the router
 export default router;
