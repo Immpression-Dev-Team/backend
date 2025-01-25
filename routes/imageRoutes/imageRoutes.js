@@ -145,22 +145,25 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
   }
 });
 
-// route to get limited images
-router.get('/limit_images', isUserAuthorized, async (request, response) => {
+// Updated route to exclude already-loaded images
+router.get('/limit_images', isUserAuthorized, async (req, res) => {
   try {
-    const images = await ImageModel.find({}).limit(10)
-  
-    // Send JSON response
-    response.status(200).json({ success: true, images: images})
+    const limit = parseInt(req.query.limit, 10) || 20; // Default limit to 20
+    const excludeIds = req.query.excludeIds ? req.query.excludeIds.split(',') : []; // IDs to exclude
+
+    // Build the query to exclude already-loaded image IDs
+    const query = excludeIds.length > 0 ? { _id: { $nin: excludeIds } } : {};
+
+    // Fetch the images with pagination
+    const images = await ImageModel.find(query).limit(limit);
+
+    res.status(200).json({ success: true, images });
   } catch (error) {
-    // Logging the error to the console
     console.error('Error fetching images:', error);
-    // Sending an internal server error response to the client
-    response
-      .status(500)
-      .json({ success: false, error: 'Internal Server Error' });
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
-})
+});
+
 
 // GET route for fetching an image by ID
 router.get('/image/:id', isUserAuthorized, async (request, response) => {
