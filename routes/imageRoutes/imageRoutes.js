@@ -148,6 +148,10 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
 // Updated route to exclude already-loaded images
 router.get('/limit_images', isUserAuthorized, async (req, res) => {
   try {
+    const images = await ImageModel.find({}).limit(52)
+    
+    // Send JSON response
+    response.status(200).json({ success: true, length: images.length, images: images})
     const limit = parseInt(req.query.limit, 10) || 20; // Default limit to 20
     const excludeIds = req.query.excludeIds ? req.query.excludeIds.split(',') : []; // IDs to exclude
 
