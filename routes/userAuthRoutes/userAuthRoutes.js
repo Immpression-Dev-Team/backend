@@ -657,5 +657,45 @@ router.delete('/delete-account', isUserAuthorized, async (req, res) => {
   }
 });
 
+// Route to update user profile fields (name, email, password)
+router.put('/update-profile', isUserAuthorized, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { name, email, password } = req.body;
+
+    // Find the user by ID
+    const user = await UserModel.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    // Update fields if provided
+    if (name) user.name = name;
+    if (email) user.email = email;
+
+    // If password is provided, hash it before saving
+    if (password) {
+      const salt = await bcrypt.genSalt(10);
+      user.password = await bcrypt.hash(password, salt);
+    }
+
+    // Save the updated user profile
+    await user.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Profile updated successfully', 
+      user: { name: user.name, email: user.email } 
+    });
+
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+
+
 // Export the router
 export default router;
