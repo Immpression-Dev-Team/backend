@@ -1,6 +1,5 @@
 # excludes node_modules from github
 node_modules
-package-lock.json
 
 # excludes .env from github
 .env

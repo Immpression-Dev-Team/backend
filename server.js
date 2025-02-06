@@ -34,8 +34,16 @@ import dotenv from 'dotenv';
 // Load environment variables
 dotenv.config();
 
-// Load corsOrigin
-const corsOrigin = process.env.CORS_ORIGIN;
+
+// Build acceptable origins dynamically
+const corsOrigins = [
+    `http://admin:${process.env.VITE_APP_ADMIN_PORT}`, // Admin service
+    `http://frontend-web:${process.env.VITE_APP_WEB_PORT}`,   // Web service
+    `http://${process.env.HOST_IP}:19000`, // Expo Go
+    `http://${process.env.HOST_IP}:8081`, // Expo Development Build
+];
+
+console.log("origins list:", corsOrigincorsOriginss)
 
 // Create an Express application
 const app = express();
@@ -48,12 +56,17 @@ app.use(cookieParser());
 
 // Middleware to allow cross-origin requests
 app.use(
-  cors({
-    // Allow requests from this origin
-    origin: corsOrigin,
-    // Allow cookies to be sent and received
-    credentials: true,
-  })
+    cors({
+        origin: (origin, callback) => {
+            // Allow requests with no origin (e.g., mobile apps, Postman)
+            if (!origin || corsOrigins.includes(origin)) {
+                callback(null, true);
+            } else {
+                callback(new Error('Not allowed by CORS'));
+            }
+        },
+        credentials: true, // Allow cookies
+    })
 );
 
 // Define a custom log format for Morgan
