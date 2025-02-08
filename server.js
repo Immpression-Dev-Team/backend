@@ -43,7 +43,7 @@ const corsOrigins = [
     `http://${process.env.HOST_IP}:8081`, // Expo Development Build
 ];
 
-console.log("origins list:", corsOrigincorsOriginss)
+console.log("origins list:", corsOrigins)
 
 // Create an Express application
 const app = express();
