@@ -87,6 +87,14 @@ const ImageSchema = new Schema(
       required: [true, "Category is required"],
       enum: CATEGORY_ENUM
     },
+    currentBid: {
+      type: Number,
+      default: 0, // Start at 0
+    },
+    highestBidder: {
+      type: String, // Store the user ID of the highest bidder
+      default: null,
+    },
   },
   {
     // Add timestamps for createdAt and updatedAt
