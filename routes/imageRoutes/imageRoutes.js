@@ -465,5 +465,88 @@ router.get('/get-image-views/:id', async (req, res) => {
   }
 });
 
+// Route to place a bid
+router.post("/place-bid/:imageId", isUserAuthorized, async (req, res) => {
+  const { imageId } = req.params;
+  const { bidAmount } = req.body;
+  const userId = req.user._id;
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(imageId)) {
+      return res.status(400).json({ success: false, error: "Invalid image ID" });
+    }
+
+    const image = await ImageModel.findById(imageId);
+    if (!image) {
+      return res.status(404).json({ success: false, error: "Artwork not found" });
+    }
+
+    if (bidAmount <= image.currentBid) {
+      return res.status(400).json({ success: false, error: "Bid must be higher than current bid" });
+    }
+
+    // Ensure `bids` array is initialized
+    if (!image.bids) {
+      image.bids = [];
+    }
+
+    // Find existing bid by user
+    const existingBidIndex = image.bids.findIndex((bid) => bid.userId.toString() === userId.toString());
+
+    if (existingBidIndex !== -1) {
+      // Update existing bid
+      image.bids[existingBidIndex].amount = bidAmount;
+    } else {
+      // Add new bid
+      image.bids.push({ userId, amount: bidAmount });
+    }
+
+    // Only update `bids`, `currentBid`, and `highestBidder`
+    await ImageModel.findByIdAndUpdate(imageId, {
+      $set: { currentBid: bidAmount, highestBidder: userId },
+      $push: { bids: { userId, amount: bidAmount } },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Bid placed successfully",
+      newBid: bidAmount,
+    });
+  } catch (error) {
+    console.error("Error placing bid:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
+
+// Route to get the current highest bid for an image
+router.get("/current-bid/:imageId", isUserAuthorized, async (req, res) => {
+  const { imageId } = req.params;
+  const userId = req.user._id; // Get the logged-in user's ID
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(imageId)) {
+      return res.status(400).json({ success: false, error: "Invalid image ID" });
+    }
+
+    const image = await ImageModel.findById(imageId);
+    if (!image) {
+      return res.status(404).json({ success: false, error: "Artwork not found" });
+    }
+
+    // Find this user's bid (if it exists)
+    const userBid = image.bids.find((bid) => bid.userId.toString() === userId.toString());
+
+    res.status(200).json({
+      success: true,
+      currentBid: image.currentBid, // The highest bid on this artwork
+      myBid: userBid ? userBid.amount : 0, // Show user's bid, or 0 if they haven't bid
+    });
+  } catch (error) {
+    console.error("Error fetching current bid:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
+
+
 // Exporting the router as the default export
 export default router;

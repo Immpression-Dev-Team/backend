@@ -24,77 +24,51 @@ const CATEGORY_ENUM = {
 // Define the ImageSchema using the Schema constructor
 const ImageSchema = new Schema(
   {
-    // Define the userId field with type String and validation
-    userId: { //commented out for testing
+    userId: {
       type: String,
-      // userId is required with a custom error message
       required: [true, "UserId is required"],
     },
     artistName: {
       type: String,
       required: [true, "artistName is required"],
     },
-    // Define the name field with type String and validation
     name: {
       type: String,
-      // name is required with a custom error message
       required: [true, "Name is required"],
-      // Minimum length of 4 characters with a custom error message
       minLength: [4, "Name should be at least 4 characters"],
-      // Maximum length of 30 characters with a custom error message
       maxLength: [30, "Name should be less than 30 characters"],
     },
-    // Define the imageFile field with type String, uniqueness, and validation, and
-    imageLink: {
-      type: String, 
-    },
-    // Define the price field with type String and validation
+    imageLink: { type: String },
     price: {
       type: Number,
-      // price is required with a custom error message
       required: [true, "Price is required"],
-
-      // Minimum value of 1 with a custom error message
       min: [1, "Price should be greater than $0.99"],
-      // Maximum value of 1,000,000 with a custom error message
       max: [1000000, "Price should be less than $1,000,000"],
-      validate: {
-        validator: function(value) {
-          return 1000000 >= value >= 1;
-        },
-        message: 'Price must be a positive number from $1 to $1,000,000'
-      }
     },
-    // Define the description field with type String and validation
     description: {
       type: String,
-      // description is required with a custom error message
       required: [true, "Description is required"],
-      // Minimum length of 4 characters with a custom error message
       minLength: [4, "Description should be at least 4 characters"],
-      // Maximum length of 30 characters with a custom error message
       maxLength: [30, "Description should be less than 30 characters"],
     },
-    // Define the viewCount field with type Number and a default value
-    views: {
-      type: Number,
-      // Default value for viewCount is 0
-      default: 0,
-    },
-    // Define the category field with type String (required, can only be one of 8 category strings)
+    views: { type: Number, default: 0 },
     category: {
       type: String,
       required: [true, "Category is required"],
-      enum: CATEGORY_ENUM
+      enum: IMAGE_CATEGORY,
     },
+    currentBid: { type: Number, default: 0 }, // Ensure there's a currentBid field
+    highestBidder: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Track highest bidder
+    bids: [
+      {
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        amount: { type: Number, required: true },
+      },
+    ], // Initialize bids as an array of objects
   },
-  {
-    // Add timestamps for createdAt and updatedAt
-    timestamps: true,
-    // Add version key keeping track of updates
-    versionKey: "__v",
-  }
+  { timestamps: true }
 );
+
 
 // Create the Image model using the ImageSchema, or retrieve it if it already exists
 const ImageModel =
