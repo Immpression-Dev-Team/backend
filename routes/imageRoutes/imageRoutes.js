@@ -547,6 +547,73 @@ router.get("/current-bid/:imageId", isUserAuthorized, async (req, res) => {
   }
 });
 
+// Route to like/unlike an image
+router.post("/image/:id/like", isUserAuthorized, async (req, res) => {
+  try {
+    const imageId = req.params.id;
+    const userId = req.user._id; // Authenticated user ID
+
+    // Find the image and ONLY return the likes array (avoiding full document save)
+    const image = await ImageModel.findById(imageId).select("likes");
+    if (!image) {
+      return res.status(404).json({ success: false, error: "Image not found" });
+    }
+
+    let hasLiked = image.likes.includes(userId);
+
+    if (hasLiked) {
+      // Unlike the image
+      await ImageModel.updateOne(
+        { _id: imageId },
+        { $pull: { likes: userId } } // Removes userId from the likes array
+      );
+      hasLiked = false;
+    } else {
+      // Like the image
+      await ImageModel.updateOne(
+        { _id: imageId },
+        { $addToSet: { likes: userId } } // Adds userId to the likes array
+      );
+      hasLiked = true;
+    }
+
+    // Get updated likes count
+    const updatedImage = await ImageModel.findById(imageId).select("likes");
+
+    res.status(200).json({
+      success: true,
+      likesCount: updatedImage.likes.length,
+      hasLiked,
+    });
+  } catch (error) {
+    console.error("Error liking/unliking image:", error);
+    res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
+// Route to get likes for an image
+router.get('/image/:id/likes', isUserAuthorized, async (request, response) => {
+  try {
+    const userId = request.user._id;
+    const imageId = request.params.id;
+
+    const image = await ImageModel.findById(imageId);
+
+    if (!image) {
+      return response.status(404).json({ success: false, error: 'Image not found' });
+    }
+
+    response.status(200).json({
+      success: true,
+      likesCount: image.likes.length,
+      hasLiked: image.likes.includes(userId),
+    });
+  } catch (error) {
+    console.error('Error fetching likes:', error);
+    response.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
 
 // Exporting the router as the default export
 export default router;
