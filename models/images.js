@@ -57,14 +57,15 @@ const ImageSchema = new Schema(
       required: [true, "Category is required"],
       enum: IMAGE_CATEGORY,
     },
-    currentBid: { type: Number, default: 0 }, // Ensure there's a currentBid field
-    highestBidder: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Track highest bidder
+    currentBid: { type: Number, default: 0 },
+    highestBidder: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     bids: [
       {
         userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         amount: { type: Number, required: true },
       },
-    ], // Initialize bids as an array of objects
+    ],
+    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], // Array of user IDs who liked the image
   },
   { timestamps: true }
 );
