@@ -161,10 +161,12 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
     // Send the combined JSON response
     response.status(200).json({
       success: true,
-      images: responseData,
       totalPages: totalPages,
       currentPage: parseInt(page), //Parse to int, because it comes from the query as a string
+      pageCount: limit,
       totalImages: totalImages,
+      images: responseData,
+
     });
   } catch (error) {
     // Logging the error to the console
