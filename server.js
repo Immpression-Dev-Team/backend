@@ -34,11 +34,10 @@ import dotenv from 'dotenv';
 // Load environment variables
 dotenv.config();
 
-
 // Build acceptable origins dynamically
 const corsOrigins = [
     `http://admin:${process.env.VITE_APP_ADMIN_PORT}`, // Admin service
-    `http://frontend-web:${process.env.VITE_APP_WEB_PORT}`,   // Web service
+    `http://localhost:${process.env.VITE_APP_WEB_PORT}`,   // Web service
     `http://${process.env.HOST_IP}:19000`, // Expo Go
     `http://${process.env.HOST_IP}:8081`, // Expo Development Build
 ];
@@ -47,6 +46,12 @@ console.log("origins list:", corsOrigins)
 
 // Create an Express application
 const app = express();
+
+app.use((req, res, next) => {
+    console.log(`Incoming request: ${req.method} ${req.url}`);
+    console.log(`Origin: ${req.headers.origin}`);
+    next();
+});
 
 // Middleware to parse JSON bodies in incoming requests
 app.use(express.json());

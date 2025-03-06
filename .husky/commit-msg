@@ -1,9 +1,2 @@
 #!/bin/sh
-docker run --rm \
-  -v "$(pwd):/app" \
-  -w /app node:18 sh -c "
-    npm install --no-save @commitlint/cli @commitlint/config-conventional && \
-    npx commitlint --config commitlint.config.cjs --edit \"$1\"; EXIT_CODE=\$?; \
-    rm -rf /app/node_modules /app/package-lock.json; \
-    exit \$EXIT_CODE
-  "
+docker run --rm -v "$(pwd):/app" premsanity/husky-commitlint "$1"
