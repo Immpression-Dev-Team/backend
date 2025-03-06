@@ -81,6 +81,24 @@ const customFormat =
 // Use Morgan middleware to log HTTP requests with the defined custom format
 app.use(morgan(customFormat));
 
+import jwt from "jsonwebtoken";
+
+app.post("/refresh-token", (req, res) => {
+    const { token: oldToken } = req.body;
+
+    if (!oldToken) return res.status(401).json({ success: false, error: "No token provided" });
+
+    jwt.verify(oldToken, process.env.JWT_SECRET, (err, decoded) => {
+        if (err) return res.status(403).json({ success: false, error: "Invalid or expired token" });
+
+        const newToken = jwt.sign({ _id: decoded._id }, process.env.JWT_SECRET, {
+            expiresIn: "1h",
+        });
+
+        res.json({ success: true, token: newToken });
+    });
+});
+
 // Use authentication routes for root path
 app.use('/', authRoutes);
 
