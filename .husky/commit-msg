@@ -1,2 +1,2 @@
 #!/bin/sh
-docker run --rm -v "$(pwd):/app" premsanity/husky-commitlint "$1"
+docker run --rm -v "$(pwd):/app" -v "$(pwd)/.git:/app/.git" premsanity/husky-commitlint "$1"
