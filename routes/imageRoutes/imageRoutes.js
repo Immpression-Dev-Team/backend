@@ -29,6 +29,9 @@ const upload = multer({ storage: storage });
 // Import the category type enum
 import { IMAGE_CATEGORY } from '../../models/images.js';
 
+// Import the IMAGE_STAGE enum
+import { IMAGE_STAGE } from "../../models/images.js";
+
 // POST route for uploading an image
 router.post('/image', isUserAuthorized, async (request, response) => {
   try {
@@ -666,6 +669,43 @@ router.get('/image/:id/likes', isUserAuthorized, async (request, response) => {
     response
       .status(500)
       .json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Route to review and update the stage of an image
+router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { stage } = req.body;
+    const userId = req.user._id; // Authenticated user
+
+    // Validate stage input
+    if (!Object.values(IMAGE_STAGE).includes(stage)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid stage. Allowed values: review, approved, rejected",
+      });
+    }
+
+    // Find and update the image
+    const updatedImage = await ImageModel.findByIdAndUpdate(
+      id,
+      { stage, reviewedBy: userId, reviewedAt: new Date() },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedImage) {
+      return res.status(404).json({ success: false, error: "Image not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Image ${stage === "approved" ? "approved" : "rejected"} successfully`,
+      image: updatedImage,
+    });
+  } catch (error) {
+    console.error("Error updating image stage:", error);
+    return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
 

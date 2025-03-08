@@ -1,14 +1,15 @@
 // Import the Mongoose library for MongoDB
 import mongoose from "mongoose";
+import bcrypt from "bcrypt";
 
 // Import the bcrypt library for hashing passwords
-import bcrypt from "bcryptjs";
+// import bcrypt from "bcryptjs";
 
 // Destructure the Schema constructor from mongoose
 const { Schema } = mongoose;
 
 // Destructure the hash function from bcrypt
-const { hash } = bcrypt;
+// const { hash } = bcrypt;
 
 // Define the UserSchema using the Schema constructor
 const UserSchema = new Schema(
@@ -91,7 +92,9 @@ UserSchema.pre("save", async function (next) {
     return next();
   }
   // Hash the password with a salt factor of 10
-  this.password = await hash(this.password, 10);
+  // this.password = await hash(this.password, 10);
+  const salt = await bcrypt.genSalt();
+  this.password = await bcrypt.hash(this.password, salt);
 });
 
 // Increment the views count by 1

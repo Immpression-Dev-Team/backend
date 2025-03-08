@@ -21,11 +21,24 @@ const CATEGORY_ENUM = {
   message: 'Category should be one of the following: [Paintings, Photography, Graphic Design, Illustrations, Sculptures, Woodwork, Graffiti, Stencil]'
 }
 
+// Define enum for image review stages
+export const IMAGE_STAGE = {
+  REVIEW: "review",
+  APPROVED: "approved",
+  REJECTED: "rejected"
+};
+
+const STAGE_ENUM = {
+  values: Object.values(IMAGE_STAGE),
+  message: 'Stage should be one of the following: [review, approved, rejected]'
+}
+
 // Define the ImageSchema using the Schema constructor
 const ImageSchema = new Schema(
   {
     userId: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
       required: [true, "UserId is required"],
     },
     artistName: {
@@ -38,7 +51,10 @@ const ImageSchema = new Schema(
       minLength: [4, "Name should be at least 4 characters"],
       maxLength: [30, "Name should be less than 30 characters"],
     },
-    imageLink: { type: String },
+    imageLink: { 
+      type: String, 
+      required: function() { return this.stage === IMAGE_STAGE.APPROVED; } 
+    },
     price: {
       type: Number,
       required: [true, "Price is required"],
@@ -49,13 +65,13 @@ const ImageSchema = new Schema(
       type: String,
       required: [true, "Description is required"],
       minLength: [4, "Description should be at least 4 characters"],
-      maxLength: [30, "Description should be less than 30 characters"],
+      maxLength: [1000, "Description should be less than 1000 characters"],
     },
     views: { type: Number, default: 0 },
     category: {
       type: String,
       required: [true, "Category is required"],
-      enum: IMAGE_CATEGORY,
+      enum: CATEGORY_ENUM,
     },
     currentBid: { type: Number, default: 0 },
     highestBidder: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -66,10 +82,18 @@ const ImageSchema = new Schema(
       },
     ],
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], // Array of user IDs who liked the image
+
+    // New fields for review system
+    stage: {
+      type: String,
+      enum: STAGE_ENUM,
+      default: IMAGE_STAGE.REVIEW, // Default to 'review' when first uploaded
+    },
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Admin/moderator who reviewed the image
+    reviewedAt: { type: Date }, // Timestamp of review action
   },
   { timestamps: true }
 );
-
 
 // Create the Image model using the ImageSchema, or retrieve it if it already exists
 const ImageModel =
