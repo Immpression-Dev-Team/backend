@@ -1,5 +1,7 @@
 import express from "express";
-import argon2 from "argon2"; // ✅ Use argon2 instead of bcrypt
+// ✅ Use argon2 instead of bcrypt
+// import argon2 from "argon2";
+import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import AdminUserModel from "../../models/admin-users.js";
 import { isAdminAuthorized } from "../../utils/authUtils.js";
@@ -10,9 +12,14 @@ router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    console.log("🔍 Searching for admin with email:", email.trim().toLowerCase());
+    console.log(
+      "🔍 Searching for admin with email:",
+      email.trim().toLowerCase()
+    );
 
-    const admin = await AdminUserModel.findOne({ email: email.trim().toLowerCase() }).select("+password");
+    const admin = await AdminUserModel.findOne({
+      email: email.trim().toLowerCase(),
+    }).select("+password");
 
     if (!admin) {
       console.log("❌ Admin not found");
@@ -24,7 +31,8 @@ router.post("/login", async (req, res) => {
     console.log("🔑 Entered Plain Password:", password);
 
     // ✅ Use argon2 to verify password
-    const isMatch = await argon2.verify(admin.password, password);
+    // const isMatch = await argon2.verify(admin.password, password);
+    const isMatch = await bcrypt.compare(password, admin.password);
     console.log("🔎 Password Match Result:", isMatch);
 
     if (!isMatch) {
@@ -49,7 +57,11 @@ router.post("/login", async (req, res) => {
 
 // ✅ Protected admin dashboard route
 router.get("/dashboard", isAdminAuthorized, (req, res) => {
-  res.status(200).json({ success: true, message: `Welcome, ${req.admin.name}!`, role: req.admin.role });
+  res.status(200).json({
+    success: true,
+    message: `Welcome, ${req.admin.name}!`,
+    role: req.admin.role,
+  });
 });
 
 export default router;

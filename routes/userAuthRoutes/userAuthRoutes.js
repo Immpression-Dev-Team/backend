@@ -1,14 +1,15 @@
 // Import the Express framework
 import express from "express";
+import bcrypt from "bcrypt";
 
 // Import bcryptjs for password hashing and comparison
-import bcrypt from "bcryptjs";
+// import bcrypt from "bcryptjs";
 
 // Import the Mongoose library for MongoDB
 import mongoose from "mongoose";
 
 // Destructure the compare function from bcrypt
-const { compare } = bcrypt;
+// const { compare } = bcrypt;
 
 // Import the user model
 import UserModel from "../../models/users.js";
@@ -98,7 +99,8 @@ router.post("/login", async (request, response) => {
         .json({ success: false, error: "User not found" });
     }
 
-    const isPasswordCorrect = await compare(password, user.password);
+    // const isPasswordCorrect = await compare(password, user.password);
+    const isPasswordCorrect = await bcrypt.compare(password, user.password);
 
     if (!isPasswordCorrect) {
       return response
