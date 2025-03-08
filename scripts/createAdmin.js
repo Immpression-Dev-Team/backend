@@ -31,7 +31,7 @@ async function createAdmin() {
 
     await newAdmin.save();
     console.log("✅ Admin created successfully!");
-    console.log("🔑 Hashed Password Stored in DB:", hashedPassword);
+    // console.log("🔑 Hashed Password Stored in DB:", hashedPassword);
 
     process.exit();
   } catch (error) {
