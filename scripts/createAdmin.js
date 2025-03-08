@@ -1,7 +1,8 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
-import argon2 from "argon2"; // ✅ Ensure argon2 is imported
-import AdminUserModel from "../models/admin-users.js"; 
+// ✅ Ensure argon2 is imported
+// import argon2 from "argon2";
+import AdminUserModel from "../models/admin-users.js";
 
 dotenv.config();
 
@@ -18,12 +19,13 @@ async function createAdmin() {
     }
 
     // ✅ Hash password with argon2
-    const hashedPassword = await argon2.hash("Testing123!"); 
+    // const hashedPassword = await argon2.hash("Testing123!");
 
     const newAdmin = new AdminUserModel({
       email,
       name: "tester",
-      password: hashedPassword, // ✅ Save the argon2 hash
+      // ✅ Save the argon2 hash
+      password: "Testing123!",
       role: "super-admin",
     });
 
