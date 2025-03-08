@@ -1,7 +1,8 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
-import argon2 from "argon2"; 
-import AdminUserModel from "../models/admin-users.js"; 
+// import argon2 from "argon2";
+import bcrypt from "bcrypt";
+import AdminUserModel from "../models/admin-users.js";
 
 dotenv.config();
 
@@ -23,7 +24,8 @@ async function testPassword() {
     console.log("🔑 Entered Password:", enteredPassword);
 
     // ✅ Use argon2 to verify
-    const isMatch = await argon2.verify(admin.password, enteredPassword);
+    // const isMatch = await argon2.verify(admin.password, enteredPassword);
+    const isMatch = await bcrypt.compare(enteredPassword, admin.password);
     console.log("✅ Password Match Result:", isMatch);
 
     process.exit();
