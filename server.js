@@ -19,6 +19,12 @@ import imageRoutes from './routes/imageRoutes/imageRoutes.js';
 // Import order handling routes
 import orderRoutes from './routes/orderRoutes/orderRoutes.js'; // New import
 
+// Import admin authentication routes
+import adminAuthRoutes from './routes/admin-userAuthRoutes/admin-userAuthRoutes.js';
+
+// Import admin-protected routes
+import adminRoutes from './routes/admin-userAuthRoutes/admin-userAuthRoutes.js';
+
 // Import the MongoDB connection URL from config file
 import { MONGO_URL } from './config/config.js';
 
@@ -35,7 +41,9 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // Load corsOrigin
-const corsOrigin = process.env.CORS_ORIGIN;
+// const corsOrigin = process.env.CORS_ORIGIN;
+const allowedOrigins = process.env.CORS_ORIGIN.split(",");
+
 
 // Create an Express application
 const app = express();
@@ -49,12 +57,17 @@ app.use(cookieParser());
 // Middleware to allow cross-origin requests
 app.use(
   cors({
-    // Allow requests from this origin
-    origin: corsOrigin,
-    // Allow cookies to be sent and received
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
   })
 );
+
 
 // Define a custom log format for Morgan
 const customFormat =
@@ -71,6 +84,12 @@ app.use('/', imageRoutes);
 
 // Use order routes for root path
 app.use('/', orderRoutes); // New route for orders
+
+// Use admin authentication routes
+app.use('/api/admin', adminAuthRoutes);
+
+// Use admin protected routes
+app.use('/api/admin', adminRoutes);
 
 // Middleware to parse URL-encoded bodies in incoming requests
 app.use(bodyParser.urlencoded({ extended: false }));

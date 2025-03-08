@@ -25,7 +25,7 @@ const AdminUserSchema = new Schema(
             required: [true, "Password is required"],
             select: false, // Prevent password from being retrieved in queries
             minLength: [6, "Password should be at least 6 characters"],
-            maxLength: [30, "Password should be less than 30 characters"],
+            maxLength: [100, "Password should be less than 30 characters"],
         },
         role: {
             type: String,
