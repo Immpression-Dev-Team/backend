@@ -5,6 +5,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import AdminUserModel from "../../models/admin-users.js";
 import { isAdminAuthorized } from "../../utils/authUtils.js";
+import ImageModel from "../../models/images.js";
 
 const router = express.Router();
 
@@ -63,5 +64,39 @@ router.get("/dashboard", isAdminAuthorized, (req, res) => {
     role: req.admin.role,
   });
 });
+
+// ✅ NEW: Admin-only route to get all images (without pagination)
+router.get("/all_images", isAdminAuthorized, async (req, res) => {
+    try {
+      // Fetch all images without filters
+      const images = await ImageModel.find({});
+  
+      // Format response data
+      const responseData = images.map((image) => ({
+        _id: image._id,
+        artistName: image.artistName,
+        name: image.name,
+        description: image.description,
+        price: image.price,
+        imageLink: image.imageLink,
+        views: image.views,
+        category: image.category,
+        createdAt: image.createdAt,
+        stage: image.stage, // ✅ Include the stage (useful for review)
+      }));
+  
+      return res.status(200).json({
+        success: true,
+        totalImages: images.length,
+        images: responseData,
+      });
+    } catch (error) {
+      console.error("Error fetching all images for admin:", error);
+      return res.status(500).json({
+        success: false,
+        error: "Internal Server Error",
+      });
+    }
+  });
 
 export default router;

@@ -98,7 +98,6 @@ export const isAdminAuthorized = async (req, res, next) => {
   return res.status(401).json({ success: false, error: "Admin access denied" });
 };
 
-
 // ✅ Ensure price is a float
 export const validatePrice = (price) => {
   const price_val = parseFloat(price);
