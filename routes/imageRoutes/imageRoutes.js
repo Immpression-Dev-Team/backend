@@ -156,6 +156,7 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
       views: image.views, // Include the view count
       category: image.category,
       createdAt: image.createdAt,
+      stage: image.stage,
     }));
 
     const totalImages = await ImageModel.countDocuments(query);
