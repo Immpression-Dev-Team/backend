@@ -4,17 +4,20 @@ FROM node:20-alpine3.20
 # Set the working directory
 WORKDIR /app
 
-# Copy the rest of the application code
-COPY . .
+# Copy package.json and package-lock.json
+COPY package.json package-lock.json ./
 
 # Install dependencies
 RUN npm install
 
-# Expose port 5000 (or whatever your API uses)
+# Copy the rest of the application code
+COPY . .
+
+# Expose the application port
 EXPOSE 4000
 
 # Enable polling for file changes
 ENV CHOKIDAR_USEPOLLING=true
 
-# Start the Express server
+# Start the application
 CMD ["npm", "start"]
