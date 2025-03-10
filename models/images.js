@@ -81,16 +81,16 @@ const ImageSchema = new Schema(
         amount: { type: Number, required: true },
       },
     ],
-    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], // Array of user IDs who liked the image
+    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], 
 
     // New fields for review system
     stage: {
       type: String,
       enum: STAGE_ENUM,
-      default: IMAGE_STAGE.REVIEW, // Default to 'review' when first uploaded
+      default: IMAGE_STAGE.REVIEW, 
     },
-    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Admin/moderator who reviewed the image
-    reviewedAt: { type: Date }, // Timestamp of review action
+    reviewedByEmail: { type: String }, // ✅ Stores the email of the reviewer
+    reviewedAt: { type: Date }, // ✅ Stores the timestamp of approval/rejection
   },
   { timestamps: true }
 );

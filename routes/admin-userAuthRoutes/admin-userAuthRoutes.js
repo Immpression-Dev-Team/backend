@@ -120,9 +120,15 @@ router.get("/art/:id", isAdminAuthorized, async (req, res) => {
 router.put("/art/:id/approve", isAdminAuthorized, async (req, res) => {
     try {
         const { id } = req.params;
+        const adminEmail = req.admin.email; // ✅ Get admin's email from JWT token
+
         const updatedArt = await ImageModel.findByIdAndUpdate(
             id,
-            { stage: "approved" },
+            { 
+                stage: "approved",
+                reviewedByEmail: adminEmail, // ✅ Save the email of the approving admin
+                reviewedAt: new Date() // ✅ Save the timestamp
+            },
             { new: true }
         );
 
@@ -136,6 +142,35 @@ router.put("/art/:id/approve", isAdminAuthorized, async (req, res) => {
         res.status(500).json({ success: false, error: "Internal Server Error" });
     }
 });
+
+
+// ✅ Admin-only route to reject an artwork
+router.put("/art/:id/reject", isAdminAuthorized, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const adminEmail = req.admin.email; // ✅ Get admin's email from JWT token
+
+        const updatedArt = await ImageModel.findByIdAndUpdate(
+            id,
+            { 
+                stage: "rejected",
+                reviewedByEmail: adminEmail, // ✅ Save the email of the rejecting admin
+                reviewedAt: new Date() // ✅ Save the timestamp
+            },
+            { new: true }
+        );
+
+        if (!updatedArt) {
+            return res.status(404).json({ success: false, error: "Artwork not found" });
+        }
+
+        res.status(200).json({ success: true, message: "Artwork rejected", art: updatedArt });
+    } catch (error) {
+        console.error("Error rejecting artwork:", error);
+        res.status(500).json({ success: false, error: "Internal Server Error" });
+    }
+});
+
 
 
 export default router;
