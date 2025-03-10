@@ -10,7 +10,7 @@ async function createAdmin() {
   try {
     await mongoose.connect(process.env.MONGO_URL);
 
-    const email = "testing@gmail.com";
+    const email = "tkhattab1999@gmail.com";
     const existingAdmin = await AdminUserModel.findOne({ email });
 
     if (existingAdmin) {
@@ -23,9 +23,9 @@ async function createAdmin() {
 
     const newAdmin = new AdminUserModel({
       email,
-      name: "tester",
+      name: "Tamer",
       // ✅ Save the argon2 hash
-      password: "Testing123!",
+      password: "Tremaster1!",
       role: "super-admin",
     });
 
