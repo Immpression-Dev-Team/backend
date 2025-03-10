@@ -19,6 +19,12 @@ import imageRoutes from './routes/imageRoutes/imageRoutes.js';
 // Import order handling routes
 import orderRoutes from './routes/orderRoutes/orderRoutes.js'; // New import
 
+// Import admin authentication routes
+import adminAuthRoutes from './routes/admin-userAuthRoutes/admin-userAuthRoutes.js';
+
+// Import admin-protected routes
+import adminRoutes from './routes/admin-userAuthRoutes/admin-userAuthRoutes.js';
+
 // Import the MongoDB connection URL from config file
 import { MONGO_URL } from './config/config.js';
 
@@ -74,6 +80,7 @@ app.use(
     })
 );
 
+
 // Define a custom log format for Morgan
 const customFormat =
   '[:date[clf]] :method :url :status :res[content-length] - :response-time ms';
@@ -107,6 +114,12 @@ app.use('/', imageRoutes);
 
 // Use order routes for root path
 app.use('/', orderRoutes); // New route for orders
+
+// Use admin authentication routes
+app.use('/api/admin', adminAuthRoutes);
+
+// Use admin protected routes
+app.use('/api/admin', adminRoutes);
 
 // Middleware to parse URL-encoded bodies in incoming requests
 app.use(bodyParser.urlencoded({ extended: false }));

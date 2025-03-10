@@ -11,7 +11,11 @@ import multer from 'multer';
 import ImageModel from '../../models/images.js';
 
 // Importing the isUserAuthorized function from the utils directory
-import { isUserAuthorized, validatePrice, validateImageLink } from "../../utils/authUtils.js";
+import {
+  isUserAuthorized,
+  validatePrice,
+  validateImageLink,
+} from '../../utils/authUtils.js';
 
 // Create a router instance with the router configuration
 const router = express.Router();
@@ -25,100 +29,121 @@ const upload = multer({ storage: storage });
 // Import the category type enum
 import { IMAGE_CATEGORY } from '../../models/images.js';
 
+// Import the IMAGE_STAGE enum
+import { IMAGE_STAGE } from "../../models/images.js";
+
 // POST route for uploading an image
-router.post(
-  "/image",
-  isUserAuthorized,
-  async (request, response) => {
-    try {
-      // Get the authenticated user's ID
-      const userId = request.user._id;
+router.post('/image', isUserAuthorized, async (request, response) => {
+  try {
+    // Get the authenticated user's ID
+    const userId = request.user._id;
 
-      // validate data in backend
-      const { artistName, name, imageLink, price, description, category } = request.body;
+    // validate data in backend
+    const { artistName, name, imageLink, price, description, category } =
+      request.body;
 
-      if (!artistName || !name || !imageLink || !price || !description || !category) {
-        return response.status(400)
-        .json({ success: false, error: "Please fill in all fields, select a category, and select an image" });
-      }
-
-      // ensure price is a float
-      const price_val = validatePrice(price);
-      if(!price_val){
-        return response.status(400)
-        .json({ success: false, error: "Price should be a valid positive number" });
-      }
-
-      // ensure image link is valid & exists
-      if(!validateImageLink(imageLink)){
-        return response.status(400)
-        .json({ success: false, error: `Image link (${imageLink}) is not valid` });
-      }
-
-      const res = await fetch(imageLink);
-      if (res.status !== 200) {
-        return response.status(400)
-        .json({ success: false, error: "Image is not accessible" });
-      }
-
-      // Create a new image document in the database
-      const newImage = await ImageModel.create({
-        userId: userId,
-        artistName: artistName,
-        name: name,
-        imageLink: imageLink,  // Make sure this matches the Cloudinary secure_url
-        price: price_val,
-        description: description,
-        category: category,
+    if (
+      !artistName ||
+      !name ||
+      !imageLink ||
+      !price ||
+      !description ||
+      !category
+    ) {
+      return response.status(400).json({
+        success: false,
+        error:
+          'Please fill in all fields, select a category, and select an image',
       });
-      console.log("New Image Saved:", newImage);
-
-      // Sending a success response after image upload
-      return response
-        .status(200)
-        .json({ success: true, image: newImage, message: "Image uploaded and saved successfully" });
-    } catch (err) {
-      // catch validation error from mongoose
-      if (err instanceof mongoose.Error.ValidationError) {
-        const errorMsg = Object.values(err.errors)
-        .map(error => error.message).join(', ');
-        return response.status(400).json({ success: false, error: errorMsg });
-      }
-
-      // Handling errors and sending an error response
-      console.error("Error Saving Image:", err);
-      return response.status(500).json({ success: false, error: err.message });
     }
+
+    // ensure price is a float
+    const price_val = validatePrice(price);
+    if (!price_val) {
+      return response.status(400).json({
+        success: false,
+        error: 'Price should be a valid positive number',
+      });
+    }
+
+    // ensure image link is valid & exists
+    if (!validateImageLink(imageLink)) {
+      return response.status(400).json({
+        success: false,
+        error: `Image link (${imageLink}) is not valid`,
+      });
+    }
+
+    const res = await fetch(imageLink);
+    if (res.status !== 200) {
+      return response
+        .status(400)
+        .json({ success: false, error: 'Image is not accessible' });
+    }
+
+    // Create a new image document in the database
+    const newImage = await ImageModel.create({
+      userId: userId,
+      artistName: artistName,
+      name: name,
+      imageLink: imageLink, // Make sure this matches the Cloudinary secure_url
+      price: price_val,
+      description: description,
+      category: category,
+    });
+    console.log('New Image Saved:', newImage);
+
+    // Sending a success response after image upload
+    return response.status(200).json({
+      success: true,
+      image: newImage,
+      message: 'Image uploaded and saved successfully',
+    });
+  } catch (err) {
+    // catch validation error from mongoose
+    if (err instanceof mongoose.Error.ValidationError) {
+      const errorMsg = Object.values(err.errors)
+        .map((error) => error.message)
+        .join(', ');
+      return response.status(400).json({ success: false, error: errorMsg });
+    }
+
+    // Handling errors and sending an error response
+    console.error('Error Saving Image:', err);
+    return response.status(500).json({ success: false, error: err.message });
   }
-);
+});
 
 // Route to get all images from the database
 router.get('/all_images', isUserAuthorized, async (request, response) => {
   try {
+    const { page = 1, limit = 50 } = request.query;
     const query = {};
     const category = request.query.category;
 
     // if user has provided search category, validate the category type & update query
-    if(category){
-      if(!IMAGE_CATEGORY.includes(category)){
+    if (category) {
+      if (!IMAGE_CATEGORY.includes(category)) {
         return response
-        .status(400)
-        .json({ success: false, error: 'Please provide a valid category' });
-      }
-      else{
+          .status(400)
+          .json({ success: false, error: 'Please provide a valid category' });
+      } else {
         query.category = category;
       }
     }
 
-    // Finding all image documents in the database that match the given query
-    const images = await ImageModel.find(query);
+    // Calculate skip value for pagination
+    const skip = (page - 1) * limit;
 
-    // If no images are found, send a 404 response
-    // if (images.length === 0) {
-    //   return response
-    //     .status(404)
-    //     .json({ success: false, message: 'No images found' });
-    // }
+    // Finding all image documents in the database that match the given query
+    const images = await ImageModel.find(query).limit(limit).skip(skip);
+
+    if (images.length === 0 && page > 1) {
+      return response.status(200).json({
+        success: true,
+        images: [],
+      }); // Or 404 if you prefer
+    }
 
     // Prepare the response data with base64 encoded images
     const responseData = images.map((image) => ({
@@ -133,8 +158,19 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
       createdAt: image.createdAt,
     }));
 
+    const totalImages = await ImageModel.countDocuments(query);
+    const totalPages = Math.ceil(totalImages / limit);
+
     // Send the combined JSON response
-    response.status(200).json({ success: true, images: responseData });
+    response.status(200).json({
+      success: true,
+      totalPages: totalPages,
+      currentPage: parseInt(page), //Parse to int, because it comes from the query as a string
+      pageCount: limit,
+      totalImages: totalImages,
+      images: responseData,
+
+    });
   } catch (error) {
     // Logging the error to the console
     console.error('Error fetching images:', error);
@@ -204,19 +240,20 @@ router.patch(
           contentType: request.file.mimetype,
         };
       }
-      if (request.body.price){
+      if (request.body.price) {
         // ensure price is a float
         const price_val = validatePrice(request.body.price);
-        if(!price_val){
-          return response.status(400)
-          .json({ success: false, error: "Price should be a valid positive number" });
+        if (!price_val) {
+          return response.status(400).json({
+            success: false,
+            error: 'Price should be a valid positive number',
+          });
         }
         updateImage.price = price_val;
       }
       if (request.body.description)
         updateImage.description = request.body.description;
-      if (request.body.category)
-        updateImage.category = request.body.category;
+      if (request.body.category) updateImage.category = request.body.category;
       // Increment the version key
       updateImage.$inc = { __v: 1 };
 
@@ -284,15 +321,16 @@ router.delete('/image/:id', isUserAuthorized, async (request, response) => {
 
     // Finding and deleting the image document in the database
     const deletedImage = await ImageModel.findOneAndDelete({
-        _id: imageId,
-        userId: userId,
-      });
+      _id: imageId,
+      userId: userId,
+    });
 
     // If the image is not found, sending a 404 response
     if (!deletedImage) {
-      return response
-        .status(404)
-        .json({ success: false, error: "Image not found or not authorized to delete" });
+      return response.status(404).json({
+        success: false,
+        error: 'Image not found or not authorized to delete',
+      });
     }
 
     // Sending a success response indicating the image was deleted
@@ -381,7 +419,7 @@ router.patch('/increment-image-views/:id', async (req, res) => {
 
     // Validate the ID parameter
     if (!id || typeof id !== 'string') {
-      console.log("Invalid or missing image ID.");
+      console.log('Invalid or missing image ID.');
       return res.status(400).json({
         success: false,
         error: 'Invalid or missing image ID',
@@ -398,15 +436,17 @@ router.patch('/increment-image-views/:id', async (req, res) => {
     );
 
     if (!updatedImage) {
-      console.log("Image not found.");
+      console.log('Image not found.');
       return res.status(404).json({
         success: false,
         error: 'Image not found',
       });
     }
 
-    console.log(`Incremented views for image ID: ${id}, new view count: ${updatedImage.views}`);
-    
+    console.log(
+      `Incremented views for image ID: ${id}, new view count: ${updatedImage.views}`
+    );
+
     res.status(200).json({
       success: true,
       message: 'Image view count incremented successfully',
@@ -462,6 +502,210 @@ router.get('/get-image-views/:id', async (req, res) => {
       success: false,
       error: 'Internal Server Error',
     });
+  }
+});
+
+// Route to place a bid
+router.post('/place-bid/:imageId', isUserAuthorized, async (req, res) => {
+  const { imageId } = req.params;
+  const { bidAmount } = req.body;
+  const userId = req.user._id;
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(imageId)) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Invalid image ID' });
+    }
+
+    const image = await ImageModel.findById(imageId);
+    if (!image) {
+      return res
+        .status(404)
+        .json({ success: false, error: 'Artwork not found' });
+    }
+
+    if (bidAmount <= image.currentBid) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Bid must be higher than current bid' });
+    }
+
+    // Ensure `bids` array is initialized
+    if (!image.bids) {
+      image.bids = [];
+    }
+
+    // Find existing bid by user
+    const existingBidIndex = image.bids.findIndex(
+      (bid) => bid.userId.toString() === userId.toString()
+    );
+
+    if (existingBidIndex !== -1) {
+      // Update existing bid
+      image.bids[existingBidIndex].amount = bidAmount;
+    } else {
+      // Add new bid
+      image.bids.push({ userId, amount: bidAmount });
+    }
+
+    // Only update `bids`, `currentBid`, and `highestBidder`
+    await ImageModel.findByIdAndUpdate(imageId, {
+      $set: { currentBid: bidAmount, highestBidder: userId },
+      $push: { bids: { userId, amount: bidAmount } },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Bid placed successfully',
+      newBid: bidAmount,
+    });
+  } catch (error) {
+    console.error('Error placing bid:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// Route to get the current highest bid for an image
+router.get('/current-bid/:imageId', isUserAuthorized, async (req, res) => {
+  const { imageId } = req.params;
+  const userId = req.user._id; // Get the logged-in user's ID
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(imageId)) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Invalid image ID' });
+    }
+
+    const image = await ImageModel.findById(imageId);
+    if (!image) {
+      return res
+        .status(404)
+        .json({ success: false, error: 'Artwork not found' });
+    }
+
+    // Find this user's bid (if it exists)
+    const userBid = image.bids.find(
+      (bid) => bid.userId.toString() === userId.toString()
+    );
+
+    res.status(200).json({
+      success: true,
+      currentBid: image.currentBid, // The highest bid on this artwork
+      myBid: userBid ? userBid.amount : 0, // Show user's bid, or 0 if they haven't bid
+    });
+  } catch (error) {
+    console.error('Error fetching current bid:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// Route to like/unlike an image
+router.post('/image/:id/like', isUserAuthorized, async (req, res) => {
+  try {
+    const imageId = req.params.id;
+    const userId = req.user._id; // Authenticated user ID
+
+    // Find the image and ONLY return the likes array (avoiding full document save)
+    const image = await ImageModel.findById(imageId).select('likes');
+    if (!image) {
+      return res.status(404).json({ success: false, error: 'Image not found' });
+    }
+
+    let hasLiked = image.likes.includes(userId);
+
+    if (hasLiked) {
+      // Unlike the image
+      await ImageModel.updateOne(
+        { _id: imageId },
+        { $pull: { likes: userId } } // Removes userId from the likes array
+      );
+      hasLiked = false;
+    } else {
+      // Like the image
+      await ImageModel.updateOne(
+        { _id: imageId },
+        { $addToSet: { likes: userId } } // Adds userId to the likes array
+      );
+      hasLiked = true;
+    }
+
+    // Get updated likes count
+    const updatedImage = await ImageModel.findById(imageId).select('likes');
+
+    res.status(200).json({
+      success: true,
+      likesCount: updatedImage.likes.length,
+      hasLiked,
+    });
+  } catch (error) {
+    console.error('Error liking/unliking image:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Route to get likes for an image
+router.get('/image/:id/likes', isUserAuthorized, async (request, response) => {
+  try {
+    const userId = request.user._id;
+    const imageId = request.params.id;
+
+    const image = await ImageModel.findById(imageId);
+
+    if (!image) {
+      return response
+        .status(404)
+        .json({ success: false, error: 'Image not found' });
+    }
+
+    response.status(200).json({
+      success: true,
+      likesCount: image.likes.length,
+      hasLiked: image.likes.includes(userId),
+    });
+  } catch (error) {
+    console.error('Error fetching likes:', error);
+    response
+      .status(500)
+      .json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Route to review and update the stage of an image
+router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { stage } = req.body;
+    const userId = req.user._id; // Authenticated user
+
+    // Validate stage input
+    if (!Object.values(IMAGE_STAGE).includes(stage)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid stage. Allowed values: review, approved, rejected",
+      });
+    }
+
+    // Find and update the image
+    const updatedImage = await ImageModel.findByIdAndUpdate(
+      id,
+      { stage, reviewedBy: userId, reviewedAt: new Date() },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedImage) {
+      return res.status(404).json({ success: false, error: "Image not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Image ${stage === "approved" ? "approved" : "rejected"} successfully`,
+      image: updatedImage,
+    });
+  } catch (error) {
+    console.error("Error updating image stage:", error);
+    return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
 

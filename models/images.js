@@ -21,79 +21,78 @@ const CATEGORY_ENUM = {
   message: 'Category should be one of the following: [Paintings, Photography, Graphic Design, Illustrations, Sculptures, Woodwork, Graffiti, Stencil]'
 }
 
+// Define enum for image review stages
+export const IMAGE_STAGE = {
+  REVIEW: "review",
+  APPROVED: "approved",
+  REJECTED: "rejected"
+};
+
+const STAGE_ENUM = {
+  values: Object.values(IMAGE_STAGE),
+  message: 'Stage should be one of the following: [review, approved, rejected]'
+}
+
 // Define the ImageSchema using the Schema constructor
 const ImageSchema = new Schema(
   {
-    // Define the userId field with type String and validation
-    userId: { //commented out for testing
-      type: String,
-      // userId is required with a custom error message
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
       required: [true, "UserId is required"],
     },
     artistName: {
       type: String,
       required: [true, "artistName is required"],
     },
-    // Define the name field with type String and validation
     name: {
       type: String,
-      // name is required with a custom error message
       required: [true, "Name is required"],
-      // Minimum length of 4 characters with a custom error message
       minLength: [4, "Name should be at least 4 characters"],
-      // Maximum length of 30 characters with a custom error message
       maxLength: [30, "Name should be less than 30 characters"],
     },
-    // Define the imageFile field with type String, uniqueness, and validation, and
-    imageLink: {
+    imageLink: { 
       type: String, 
+      required: function() { return this.stage === IMAGE_STAGE.APPROVED; } 
     },
-    // Define the price field with type String and validation
     price: {
       type: Number,
-      // price is required with a custom error message
       required: [true, "Price is required"],
-
-      // Minimum value of 1 with a custom error message
       min: [1, "Price should be greater than $0.99"],
-      // Maximum value of 1,000,000 with a custom error message
       max: [1000000, "Price should be less than $1,000,000"],
-      validate: {
-        validator: function(value) {
-          return 1000000 >= value >= 1;
-        },
-        message: 'Price must be a positive number from $1 to $1,000,000'
-      }
     },
-    // Define the description field with type String and validation
     description: {
       type: String,
-      // description is required with a custom error message
       required: [true, "Description is required"],
-      // Minimum length of 4 characters with a custom error message
       minLength: [4, "Description should be at least 4 characters"],
-      // Maximum length of 30 characters with a custom error message
-      maxLength: [30, "Description should be less than 30 characters"],
+      maxLength: [1000, "Description should be less than 1000 characters"],
     },
-    // Define the viewCount field with type Number and a default value
-    views: {
-      type: Number,
-      // Default value for viewCount is 0
-      default: 0,
-    },
-    // Define the category field with type String (required, can only be one of 8 category strings)
+    views: { type: Number, default: 0 },
     category: {
       type: String,
       required: [true, "Category is required"],
-      enum: CATEGORY_ENUM
+      enum: CATEGORY_ENUM,
     },
+    currentBid: { type: Number, default: 0 },
+    highestBidder: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    bids: [
+      {
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        amount: { type: Number, required: true },
+      },
+    ],
+    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], // Array of user IDs who liked the image
+
+    // New fields for review system
+    stage: {
+      type: String,
+      enum: STAGE_ENUM,
+      default: IMAGE_STAGE.REVIEW, // Default to 'review' when first uploaded
+    },
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Admin/moderator who reviewed the image
+    reviewedAt: { type: Date }, // Timestamp of review action
   },
-  {
-    // Add timestamps for createdAt and updatedAt
-    timestamps: true,
-    // Add version key keeping track of updates
-    versionKey: "__v",
-  }
+  { timestamps: true }
 );
 
 // Create the Image model using the ImageSchema, or retrieve it if it already exists
