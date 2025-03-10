@@ -46,7 +46,8 @@ const corsOrigins = [
     `http://localhost:${process.env.VITE_APP_WEB_PORT}`,   // Web service
     `http://${process.env.HOST_IP}:19000`, // Expo Go
     `http://${process.env.HOST_IP}:8081`, // Expo Development Build
-    `http://localhost:5173`
+    `http://localhost:5173` // Admin Locally
+    `https://immpression-admin.vercel.app` // Admin Online 
 ];
 
 console.log("origins list:", corsOrigins)
