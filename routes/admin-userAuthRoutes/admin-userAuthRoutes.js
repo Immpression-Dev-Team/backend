@@ -4,6 +4,7 @@ import express from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import AdminUserModel from "../../models/admin-users.js";
+import UserModel from "../../models/users.js"; // Import the User model
 import { isAdminAuthorized } from "../../utils/authUtils.js";
 import ImageModel from "../../models/images.js";
 
@@ -171,6 +172,21 @@ router.put("/art/:id/reject", isAdminAuthorized, async (req, res) => {
     }
 });
 
+// ✅ Admin-only route to get all users
+router.get("/users", isAdminAuthorized, async (req, res) => {
+    try {
+        const users = await UserModel.find({}, "name email role createdAt profilePictureLink");
+
+        if (!users.length) {
+            return res.status(404).json({ success: false, error: "No users found" });
+        }
+
+        return res.status(200).json({ success: true, totalUsers: users.length, users });
+    } catch (error) {
+        console.error("Error fetching users:", error);
+        return res.status(500).json({ success: false, error: "Internal Server Error" });
+    }
+});
 
 
 export default router;
