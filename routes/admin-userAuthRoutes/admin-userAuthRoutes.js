@@ -188,5 +188,21 @@ router.get("/users", isAdminAuthorized, async (req, res) => {
     }
 });
 
+// ✅ Admin-only route to get a single user by ID with all details
+router.get("/user/:id", isAdminAuthorized, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const user = await UserModel.findById(id).select("-password"); // ✅ Exclude password for security
+
+        if (!user) {
+            return res.status(404).json({ success: false, error: "User not found" });
+        }
+
+        return res.status(200).json({ success: true, user });
+    } catch (error) {
+        console.error("Error fetching user details:", error);
+        return res.status(500).json({ success: false, error: "Internal Server Error" });
+    }
+});
 
 export default router;
