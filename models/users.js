@@ -1,6 +1,6 @@
 // Import the Mongoose library for MongoDB
-import mongoose from "mongoose";
-import bcrypt from "bcrypt";
+import mongoose from 'mongoose';
+import bcrypt from 'bcrypt';
 
 // Import the bcrypt library for hashing passwords
 // import bcrypt from "bcryptjs";
@@ -18,43 +18,44 @@ const UserSchema = new Schema(
     email: {
       type: String,
       unique: true,
-      required: [true, "Email is required"],
+      required: [true, 'Email is required'],
       match: [
         /^\w+(\.\w+)*@\w+([\-]?\w+)*(\.\w{2,3})+$/,
-        "Invalid email address",
+        'Invalid email address',
       ],
     },
     // Define the name field with type String and validation
     name: {
       type: String,
-      required: [true, "Name is required"],
-      minLength: [4, "Name should be at least 4 characters"],
-      maxLength: [30, "Name should be less than 30 characters"],
+
+      required: false,
+      minLength: [4, 'Name should be at least 4 characters'],
+      maxLength: [30, 'Name should be less than 30 characters'],
     },
     // Define the password field with type String and validation
     password: {
       type: String,
-      required: [true, "Password is required"],
+      required: false,
       select: false,
-      minLength: [6, "Password should be at least 6 characters"],
-      maxLength: [30, "Password should be less than 30 characters"],
+      minLength: [6, 'Password should be at least 6 characters'],
+      maxLength: [30, 'Password should be less than 30 characters'],
     },
     // Add a field for profile picture link
     profilePictureLink: {
       type: String,
       default:
-        "https://res.cloudinary.com/dttomxwev/image/upload/v1731113780/quisplf7viuudtptaund",
+        'https://res.cloudinary.com/dttomxwev/image/upload/v1731113780/quisplf7viuudtptaund',
     },
     // Add the bio field with type String and a maximum length
     bio: {
       type: String,
-      maxLength: [500, "Bio should be less than 500 characters"],
+      maxLength: [500, 'Bio should be less than 500 characters'],
       default: null,
     },
     // Add the artistType field with type String to specify the type of artist
     artistType: {
       type: String,
-      maxLength: [50, "Artist type should be less than 50 characters"],
+      maxLength: [50, 'Artist type should be less than 50 characters'],
       default: null,
     },
     views: {
@@ -64,7 +65,7 @@ const UserSchema = new Schema(
     accountType: {
       type: String,
       enum: {
-        values: ["artist", "art-lover"],
+        values: ['artist', 'art-lover'],
         message:
           '{VALUE} is not a valid account type. Choose either "artist" or "art-lover".',
       },
@@ -76,19 +77,23 @@ const UserSchema = new Schema(
     },
     isGoogleUser: {
       type: Boolean,
+      default: true,
+    },
+    isVerified: {
+      type: Boolean,
       default: false,
     },
   },
   {
     // Add timestamps for createdAt and updatedAt
     timestamps: true,
-    versionKey: "__v",
+    versionKey: '__v',
   }
 );
 
 // Middleware to hash the password before saving if it's modified
-UserSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) {
+UserSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) {
     return next();
   }
   // Hash the password with a salt factor of 10
@@ -104,7 +109,7 @@ UserSchema.methods.incrementViews = async function () {
 };
 
 // Create the User model using the UserSchema, or retrieve it if it already exists
-const UserModel = mongoose.models.User || mongoose.model("User", UserSchema);
+const UserModel = mongoose.models.User || mongoose.model('User', UserSchema);
 
 // Example usage in a route/controller (ensure this part is outside the schema definition)
 async function incrementUserViews(userId) {

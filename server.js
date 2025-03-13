@@ -42,23 +42,23 @@ dotenv.config();
 
 // Build acceptable origins dynamically
 const corsOrigins = [
-    `http://admin:${process.env.VITE_APP_ADMIN_PORT}`, // Admin service
-    `http://localhost:${process.env.VITE_APP_WEB_PORT}`,   // Web service
-    `http://${process.env.HOST_IP}:19000`, // Expo Go
-    `http://${process.env.HOST_IP}:8081`, // Expo Development Build
-    `http://localhost:5173`, // Admin Locally
-    `https://immpression-admin.vercel.app`, // Admin Online 
+  `http://admin:${process.env.VITE_APP_ADMIN_PORT}`, // Admin service
+  `http://localhost:${process.env.VITE_APP_WEB_PORT}`, // Web service
+  `http://${process.env.HOST_IP}:19000`, // Expo Go
+  `http://${process.env.HOST_IP}:8081`, // Expo Development Build
+  'http://localhost:5173', // Admin Locally
+  'https://immpression-admin.vercel.app', // Admin Online
 ];
 
-console.log("origins list:", corsOrigins)
+console.log('origins list:', corsOrigins);
 
 // Create an Express application
 const app = express();
 
 app.use((req, res, next) => {
-    console.log(`Incoming request: ${req.method} ${req.url}`);
-    console.log(`Origin: ${req.headers.origin}`);
-    next();
+  console.log(`Incoming request: ${req.method} ${req.url}`);
+  console.log(`Origin: ${req.headers.origin}`);
+  next();
 });
 
 // Middleware to parse JSON bodies in incoming requests
@@ -69,19 +69,18 @@ app.use(cookieParser());
 
 // Middleware to allow cross-origin requests
 app.use(
-    cors({
-        origin: (origin, callback) => {
-            // Allow requests with no origin (e.g., mobile apps, Postman)
-            if (!origin || corsOrigins.includes(origin)) {
-                callback(null, true);
-            } else {
-                callback(new Error('Not allowed by CORS'));
-            }
-        },
-        credentials: true, // Allow cookies
-    })
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g., mobile apps, Postman)
+      if (!origin || corsOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true, // Allow cookies
+  })
 );
-
 
 // Define a custom log format for Morgan
 const customFormat =
@@ -90,22 +89,26 @@ const customFormat =
 // Use Morgan middleware to log HTTP requests with the defined custom format
 app.use(morgan(customFormat));
 
-import jwt from "jsonwebtoken";
+import jwt from 'jsonwebtoken';
 
-app.post("/refresh-token", (req, res) => {
-    const { token: oldToken } = req.body;
+app.post('/refresh-token', (req, res) => {
+  const { token: oldToken } = req.body;
 
-    if (!oldToken) return res.status(401).json({ success: false, error: "No token provided" });
+  if (!oldToken)
+    return res.status(401).json({ success: false, error: 'No token provided' });
 
-    jwt.verify(oldToken, process.env.JWT_SECRET, (err, decoded) => {
-        if (err) return res.status(403).json({ success: false, error: "Invalid or expired token" });
+  jwt.verify(oldToken, process.env.JWT_SECRET, (err, decoded) => {
+    if (err)
+      return res
+        .status(403)
+        .json({ success: false, error: 'Invalid or expired token' });
 
-        const newToken = jwt.sign({ _id: decoded._id }, process.env.JWT_SECRET, {
-            expiresIn: "1h",
-        });
-
-        res.json({ success: true, token: newToken });
+    const newToken = jwt.sign({ _id: decoded._id }, process.env.JWT_SECRET, {
+      expiresIn: '1h',
     });
+
+    res.json({ success: true, token: newToken });
+  });
 });
 
 // Use authentication routes for root path
