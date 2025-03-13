@@ -32,6 +32,8 @@ import { OAuth2Client } from 'google-auth-library';
 // Initialize Google OAuth client after other configurations
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 import OTP from '../../models/otp.js';
+import { generateOtpEmailTemplate } from '../../utils/email.js';
+import sendEmail from '../../services/email.js';
 
 cloudinary.v2.config({
   cloud_name: process.env.CLOUDINARY_CLOUD,
@@ -72,7 +74,8 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
     );
 
     // send email
-    // await sendEmail()
+    const html = generateOtpEmailTemplate(otp, email);
+    await sendEmail(email, 'Registration OTP', html);
 
     if (!existingUser) {
       await UserModel.create({ email });
@@ -81,7 +84,6 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
     return response.status(200).json({
       success: true,
       message: 'OTP sent successfully',
-      otp,
     });
   } catch (error) {
     console.log('OTP request failed', error);
@@ -164,9 +166,11 @@ router.post('/signup', async (request, response) => {
 
     console.log('New user created successfully');
 
-    response
-      .status(200)
-      .json({ success: true, message: 'Signup successful', user: newUser });
+    response.status(200).json({
+      success: true,
+      message: 'Signup successful',
+      user: existingUser,
+    });
   } catch (error) {
     if (error instanceof mongoose.Error.ValidationError) {
       for (const field in error.errors) {
