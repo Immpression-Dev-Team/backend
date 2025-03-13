@@ -50,8 +50,6 @@ const corsOrigins = [
   'https://immpression-admin.vercel.app', // Admin Online
 ];
 
-console.log('origins list:', corsOrigins);
-
 // Create an Express application
 const app = express();
 

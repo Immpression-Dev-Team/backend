@@ -9,13 +9,18 @@ import bcrypt from 'bcrypt';
 import mongoose from 'mongoose';
 
 // Destructure the compare function from bcrypt
-// const { compare } = bcrypt;
+const { compare, hash } = bcrypt;
 
 // Import the user model
 import UserModel from '../../models/users.js';
 
 // Import utility functions for authentication
-import { setAuthCookies, generateAuthToken } from '../../utils/authUtils.js';
+import {
+  setAuthCookies,
+  generateAuthToken,
+  otpRateLimiter,
+  isValidEmail,
+} from '../../utils/authUtils.js';
 
 import { isUserAuthorized } from '../../utils/authUtils.js';
 
@@ -154,17 +159,13 @@ router.post('/signup', async (request, response) => {
   try {
     const { name, email, password } = request.body;
 
-    const userExists = await UserModel.findOne({ email });
-
-    if (userExists) {
+    if (!name || !email || !password) {
       return response
-        .status(409)
-        .json({ success: false, error: 'User already exists' });
+        .status(400)
+        .json({ success: false, message: 'Please provide all credentials' });
     }
 
     const existingUser = await UserModel.findOne({ email });
-
-    console.log('New user created successfully');
 
     response.status(200).json({
       success: true,
