@@ -364,36 +364,32 @@ router.post('/profile-picture', async (request, response) => {
 router.get('/profile-picture/:userId', async (request, response) => {
   try {
     const { userId } = request.params;
+    console.log(`Received request for profile picture of userId: ${userId}`);
 
-    // Find the user by their userId
     const user = await UserModel.findById(userId);
 
     if (!user) {
-      return response
-        .status(404)
-        .json({ success: false, error: 'User not found' });
+      console.warn(`User with ID ${userId} not found.`);
+      return response.status(404).json({ success: false, error: 'User not found' });
     }
 
-    // Check if the user has a profile picture link
     if (!user.profilePictureLink) {
-      console.log('profile picture link not found');
-      return response
-        .status(404)
-        .json({ success: false, error: 'Profile picture not found' });
+      console.warn(`User ${userId} has no profile picture.`);
+      return response.status(404).json({ success: false, error: 'Profile picture not found' });
     }
 
-    // Respond with the profile picture link
+    console.log(`Returning profile picture for user ${userId}: ${user.profilePictureLink}`);
+
     response.status(200).json({
       success: true,
       profilePictureLink: user.profilePictureLink,
     });
   } catch (error) {
-    console.error(error);
-    response
-      .status(500)
-      .json({ success: false, error: 'Internal Server Error' });
+    console.error('Error fetching profile picture:', error);
+    response.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
+
 
 // Route for updating profile picture
 router.put('/profile-picture', async (request, response) => {

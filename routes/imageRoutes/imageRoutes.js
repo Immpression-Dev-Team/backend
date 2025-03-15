@@ -121,7 +121,6 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
     const query = {};
     const category = request.query.category;
 
-    // if user has provided search category, validate the category type & update query
     if (category) {
       if (!IMAGE_CATEGORY.includes(category)) {
         return response
@@ -132,55 +131,35 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
       }
     }
 
-    // Calculate skip value for pagination
     const skip = (page - 1) * limit;
 
-    // Finding all image documents in the database that match the given query
-    const images = await ImageModel.find(query).limit(limit).skip(skip);
+    // Include `userId` in the response
+    const images = await ImageModel.find(query)
+      .limit(limit)
+      .skip(skip)
+      .select('_id userId artistName name description price imageLink views category createdAt stage');
 
     if (images.length === 0 && page > 1) {
-      return response.status(200).json({
-        success: true,
-        images: [],
-      }); // Or 404 if you prefer
+      return response.status(200).json({ success: true, images: [] });
     }
-
-    // Prepare the response data with base64 encoded images
-    const responseData = images.map((image) => ({
-      _id: image._id,
-      artistName: image.artistName,
-      name: image.name,
-      description: image.description,
-      price: image.price,
-      imageLink: image.imageLink,
-      views: image.views, // Include the view count
-      category: image.category,
-      createdAt: image.createdAt,
-      stage: image.stage,
-    }));
 
     const totalImages = await ImageModel.countDocuments(query);
     const totalPages = Math.ceil(totalImages / limit);
 
-    // Send the combined JSON response
     response.status(200).json({
       success: true,
       totalPages: totalPages,
-      currentPage: parseInt(page), //Parse to int, because it comes from the query as a string
+      currentPage: parseInt(page),
       pageCount: limit,
       totalImages: totalImages,
-      images: responseData,
-
+      images,
     });
   } catch (error) {
-    // Logging the error to the console
     console.error('Error fetching images:', error);
-    // Sending an internal server error response to the client
-    response
-      .status(500)
-      .json({ success: false, error: 'Internal Server Error' });
+    response.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
+
 
 // GET route for fetching an image by ID
 router.get('/image/:id', isUserAuthorized, async (request, response) => {
