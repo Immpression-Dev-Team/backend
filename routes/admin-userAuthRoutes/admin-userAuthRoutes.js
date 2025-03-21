@@ -66,12 +66,48 @@ router.get("/dashboard", isAdminAuthorized, (req, res) => {
     });
 });
 
-// ✅ NEW: Admin-only route to get all images (without pagination)
+// ✅ NEW: Admin-only route to get all images (with pagination)
 router.get("/all_images", isAdminAuthorized, async (req, res) => {
     try {
-        // Fetch all images without filters
-        const images = await ImageModel.find({});
+        // define pagination metadata (curr page, #items per page) + its default value
+        const page = parseInt(req.query.page) || 1;
+        if (page <= 0) {
+            return res.status(400).json({ error: "Invalid page number. Please provide a positive integer." });
+        }
 
+        const MAX_LIMIT = 50;
+        const limit = parseInt(req.query.limit) || MAX_LIMIT;
+        
+        // query for specific stage status if provided (pending images might not have statuses so include those)
+        const stage = req.query.stage;
+        const query = (stage === 'review') ? 
+            { $or: [{ stage: 'review' }, { stage: { $exists: false } }] } :
+            (
+                stage ? { stage: stage } : {}
+            );
+
+        // count total #pages & return empty page if overbound
+        const totalCount = await ImageModel.countDocuments(query);
+        const totalPages = Math.ceil(totalCount / limit);
+        if(page > totalPages){
+            return res.status(200).json({
+                success: true,
+                images: [],
+                pagination: {
+                    currentPage: 1,
+                    totalPages: totalPages,
+                    totalImages: totalCount,
+                },
+            });
+        }
+
+        // calculate #items to skip before fetch
+        const skip = (page - 1) * limit;
+        const images = await ImageModel.find(query)
+            .skip(skip)
+            .limit(limit)
+            .exec();
+        
         // Format response data
         const responseData = images.map((image) => ({
             _id: image._id,
@@ -86,10 +122,14 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
             stage: image.stage, // ✅ Include the stage (useful for review)
         }));
 
-        return res.status(200).json({
+        res.status(200).json({
             success: true,
-            totalImages: images.length,
             images: responseData,
+            pagination: {
+                currentPage: page,
+                totalPages: totalPages,
+                totalImages: totalCount,
+            }
         });
     } catch (error) {
         console.error("Error fetching all images for admin:", error);
