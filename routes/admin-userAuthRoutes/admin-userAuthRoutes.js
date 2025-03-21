@@ -140,6 +140,40 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
     }
 });
 
+// ✅ NEW: Admin-only route to get images statistics (counting total, pending, etc.)
+router.get("/all_images/stats", isAdminAuthorized, async (_, res) => {
+    try{
+        const totalCount = await ImageModel.countDocuments();
+
+        // counted images w/o stage attribute
+        const pendingCount = await ImageModel.countDocuments({
+            $or: [
+                { stage: 'review' },
+                { stage: { $exists: false } }
+            ]
+        });
+        const approvedCount = await ImageModel.countDocuments({ stage: 'approved' });
+        const rejectedCount = await ImageModel.countDocuments({ stage: 'rejected' });
+
+        res.status(200).json({
+            success: true,
+            stats:{
+                total: totalCount,
+                pending: pendingCount,
+                approved: approvedCount,
+                rejected: rejectedCount,
+            }
+        })
+    }
+    catch (error){
+        console.error("Error fetching images stats for admin:", error);
+        return res.status(500).json({
+            success: false,
+            error: "Internal Server Error",
+        });
+    }
+});
+
 // ✅ Get a single artwork by ID
 router.get("/art/:id", isAdminAuthorized, async (req, res) => {
     try {
