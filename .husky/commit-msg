@@ -1,2 +1,15 @@
 #!/bin/sh
-docker run --rm -v "$(pwd):/app" -v "$(pwd)/.git:/app/.git" premsanity/husky-commitlint "$1"
+
+IMAGE_NAME="premsanity/husky-commitlint"
+
+# Check if the Docker image exists
+if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+  echo "❌ Docker image '$IMAGE_NAME' not found!"
+  echo "🚀 Please pull the image using: docker pull $IMAGE_NAME
+  or running the husky-image-pull.sh script in the scripts folder
+  'sh scripts/huskt-image-pull.sh'"
+  exit 1
+fi
+
+# Run commitlint using the Docker image
+docker run --rm -v "$(pwd):/app" -v "$(pwd)/.git:/app/.git" "$IMAGE_NAME" "$1"
