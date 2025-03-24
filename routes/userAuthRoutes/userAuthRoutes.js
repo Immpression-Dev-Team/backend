@@ -159,28 +159,43 @@ router.post('/signup', async (request, response) => {
   try {
     const { name, email, password } = request.body;
 
+    // Validate input
     if (!name || !email || !password) {
       return response
         .status(400)
-        .json({ success: false, message: 'Please provide all credentials' });
+        .json({ success: false, error: 'Please provide all credentials' });
     }
 
+    // Check if user already exists
     const existingUser = await UserModel.findOne({ email });
+    if (existingUser) {
+      return response
+        .status(409)
+        .json({ success: false, error: 'Email already registered' });
+    }
 
-    response.status(200).json({
+    // Create new user (password will be hashed by UserSchema.pre('save'))
+    const newUser = await UserModel.create({
+      name,
+      email,
+      password, // Pass the raw password; the middleware will hash it
+    });
+
+    // Return success response
+    response.status(201).json({
       success: true,
       message: 'Signup successful',
-      user: existingUser,
+      user: { id: newUser._id, name: newUser.name, email: newUser.email },
     });
   } catch (error) {
     if (error instanceof mongoose.Error.ValidationError) {
       for (const field in error.errors) {
         const message = error.errors[field].message;
-        return response.status(400).json({ success: false, message });
+        return response.status(400).json({ success: false, error: message });
       }
     }
 
-    console.error(error);
+    console.error('Signup error:', error);
     response
       .status(500)
       .json({ success: false, error: 'Internal Server Error' });
