@@ -168,24 +168,26 @@ router.post('/signup', async (request, response) => {
 
     // Check if user already exists
     const existingUser = await UserModel.findOne({ email });
-    if (existingUser) {
+    if (!existingUser) {
       return response
-        .status(409)
-        .json({ success: false, error: 'Email already registered' });
+        .status(404)
+        .json({ success: false, error: 'User not found' });
     }
 
-    // Create new user (password will be hashed by UserSchema.pre('save'))
-    const newUser = await UserModel.create({
-      name,
-      email,
-      password, // Pass the raw password; the middleware will hash it
-    });
+    existingUser.name = name;
+    existingUser.password = password;
+
+    await existingUser.save();
 
     // Return success response
-    response.status(201).json({
+    return response.status(201).json({
       success: true,
       message: 'Signup successful',
-      user: { id: newUser._id, name: newUser.name, email: newUser.email },
+      user: {
+        id: existingUser._id,
+        name: existingUser.name,
+        email: existingUser.email,
+      },
     });
   } catch (error) {
     if (error instanceof mongoose.Error.ValidationError) {
@@ -385,15 +387,21 @@ router.get('/profile-picture/:userId', async (request, response) => {
 
     if (!user) {
       console.warn(`User with ID ${userId} not found.`);
-      return response.status(404).json({ success: false, error: 'User not found' });
+      return response
+        .status(404)
+        .json({ success: false, error: 'User not found' });
     }
 
     if (!user.profilePictureLink) {
       console.warn(`User ${userId} has no profile picture.`);
-      return response.status(404).json({ success: false, error: 'Profile picture not found' });
+      return response
+        .status(404)
+        .json({ success: false, error: 'Profile picture not found' });
     }
 
-    console.log(`Returning profile picture for user ${userId}: ${user.profilePictureLink}`);
+    console.log(
+      `Returning profile picture for user ${userId}: ${user.profilePictureLink}`
+    );
 
     response.status(200).json({
       success: true,
@@ -401,10 +409,11 @@ router.get('/profile-picture/:userId', async (request, response) => {
     });
   } catch (error) {
     console.error('Error fetching profile picture:', error);
-    response.status(500).json({ success: false, error: 'Internal Server Error' });
+    response
+      .status(500)
+      .json({ success: false, error: 'Internal Server Error' });
   }
 });
-
 
 // Route for updating profile picture
 router.put('/profile-picture', async (request, response) => {
