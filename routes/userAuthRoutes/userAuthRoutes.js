@@ -52,7 +52,7 @@ const router = express.Router();
 // Route for OTP request
 router.post('/request-otp', otpRateLimiter, async (request, response) => {
   try {
-    const { email } = request.body;
+    const { email, password } = request.body;
 
     if (!email || !isValidEmail(email)) {
       return response
@@ -60,11 +60,18 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
         .json({ success: false, message: 'Invalid Email Address' });
     }
 
+    if (!password) {
+      return response
+        .status(401)
+        .json({ success: false, message: 'Please input password' });
+    }
+
     const existingUser = await UserModel.findOne({ email });
     if (existingUser?.isVerified) {
-      return response
-        .status(409)
-        .json({ success: false, message: 'Email already registered' });
+      return response.status(409).json({
+        success: false,
+        message: 'Email already registered. Please Login.',
+      });
     }
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
@@ -83,7 +90,7 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
     await sendEmail(email, 'Registration OTP', html);
 
     if (!existingUser) {
-      await UserModel.create({ email });
+      await UserModel.create({ email, password });
     }
 
     return response.status(200).json({
@@ -154,13 +161,13 @@ router.post('/verify-otp', async (request, response) => {
   }
 });
 
-// Route for user signup
+// Route to fcomplete user signup
 router.post('/signup', async (request, response) => {
   try {
-    const { name, email, password } = request.body;
+    const { name, email } = request.body;
 
     // Validate input
-    if (!name || !email || !password) {
+    if (!name || !email) {
       return response
         .status(400)
         .json({ success: false, error: 'Please provide all credentials' });
@@ -168,24 +175,25 @@ router.post('/signup', async (request, response) => {
 
     // Check if user already exists
     const existingUser = await UserModel.findOne({ email });
-    if (existingUser) {
+    if (!existingUser) {
       return response
-        .status(409)
-        .json({ success: false, error: 'Email already registered' });
+        .status(404)
+        .json({ success: false, error: 'User not found' });
     }
 
-    // Create new user (password will be hashed by UserSchema.pre('save'))
-    const newUser = await UserModel.create({
-      name,
-      email,
-      password, // Pass the raw password; the middleware will hash it
-    });
+    existingUser.name = name;
+
+    await existingUser.save();
 
     // Return success response
-    response.status(201).json({
+    return response.status(201).json({
       success: true,
       message: 'Signup successful',
-      user: { id: newUser._id, name: newUser.name, email: newUser.email },
+      user: {
+        id: existingUser._id,
+        name: existingUser.name,
+        email: existingUser.email,
+      },
     });
   } catch (error) {
     if (error instanceof mongoose.Error.ValidationError) {
@@ -385,15 +393,21 @@ router.get('/profile-picture/:userId', async (request, response) => {
 
     if (!user) {
       console.warn(`User with ID ${userId} not found.`);
-      return response.status(404).json({ success: false, error: 'User not found' });
+      return response
+        .status(404)
+        .json({ success: false, error: 'User not found' });
     }
 
     if (!user.profilePictureLink) {
       console.warn(`User ${userId} has no profile picture.`);
-      return response.status(404).json({ success: false, error: 'Profile picture not found' });
+      return response
+        .status(404)
+        .json({ success: false, error: 'Profile picture not found' });
     }
 
-    console.log(`Returning profile picture for user ${userId}: ${user.profilePictureLink}`);
+    console.log(
+      `Returning profile picture for user ${userId}: ${user.profilePictureLink}`
+    );
 
     response.status(200).json({
       success: true,
@@ -401,10 +415,11 @@ router.get('/profile-picture/:userId', async (request, response) => {
     });
   } catch (error) {
     console.error('Error fetching profile picture:', error);
-    response.status(500).json({ success: false, error: 'Internal Server Error' });
+    response
+      .status(500)
+      .json({ success: false, error: 'Internal Server Error' });
   }
 });
-
 
 // Route for updating profile picture
 router.put('/profile-picture', async (request, response) => {
