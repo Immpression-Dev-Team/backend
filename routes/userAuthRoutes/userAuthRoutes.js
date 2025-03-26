@@ -52,7 +52,7 @@ const router = express.Router();
 // Route for OTP request
 router.post('/request-otp', otpRateLimiter, async (request, response) => {
   try {
-    const { email } = request.body;
+    const { email, password } = request.body;
 
     if (!email || !isValidEmail(email)) {
       return response
@@ -60,11 +60,18 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
         .json({ success: false, message: 'Invalid Email Address' });
     }
 
+    if (!password) {
+      return response
+        .status(401)
+        .json({ success: false, message: 'Please input password' });
+    }
+
     const existingUser = await UserModel.findOne({ email });
     if (existingUser?.isVerified) {
-      return response
-        .status(409)
-        .json({ success: false, message: 'Email already registered' });
+      return response.status(409).json({
+        success: false,
+        message: 'Email already registered. Please Login.',
+      });
     }
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
@@ -83,7 +90,7 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
     await sendEmail(email, 'Registration OTP', html);
 
     if (!existingUser) {
-      await UserModel.create({ email });
+      await UserModel.create({ email, password });
     }
 
     return response.status(200).json({
@@ -154,13 +161,13 @@ router.post('/verify-otp', async (request, response) => {
   }
 });
 
-// Route for user signup
+// Route to fcomplete user signup
 router.post('/signup', async (request, response) => {
   try {
-    const { name, email, password } = request.body;
+    const { name, email } = request.body;
 
     // Validate input
-    if (!name || !email || !password) {
+    if (!name || !email) {
       return response
         .status(400)
         .json({ success: false, error: 'Please provide all credentials' });
@@ -175,7 +182,6 @@ router.post('/signup', async (request, response) => {
     }
 
     existingUser.name = name;
-    existingUser.password = password;
 
     await existingUser.save();
 
