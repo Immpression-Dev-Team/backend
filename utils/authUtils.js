@@ -27,9 +27,18 @@ export const generateAuthToken = (_id) => {
   return jwt.sign({ _id }, JWT_SECRET, { expiresIn: '7d' });
 };
 
-// ✅ Function to set authentication cookies in the response
-export const setAuthCookies = (response, value) => {
-  response.cookie('auth-token', value, {
+// ✅ Function to generate a JWT token for an admin user
+export const generateAdminAuthToken = (admin, expiresIn) => {
+  return jwt.sign(
+    { id: admin.id, role: admin.role }, 
+    JWT_SECRET,
+    { expiresIn: expiresIn }
+  );
+};
+
+// ✅ Function to set authentication cookies in the res
+export const setAuthCookies = (res, value) => {
+  res.cookie('auth-token', value, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
@@ -37,69 +46,73 @@ export const setAuthCookies = (response, value) => {
   });
 };
 
+// ✅ Function to get authentication token from request header
+export const getAuthToken = (headers) => {
+  const authHeader = headers['authorization'] || headers['Authorization'];
+
+  // if header is invalid/ misses token
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ message: 'Authorization header missing or invalid' });
+  }
+
+  return authHeader.split(' ')[1];
+}
+
 // ✅ Middleware to check if the user is authorized (Regular Users)
-export const isUserAuthorized = async (request, response, next) => {
-  const authHeader = request.headers['authorization'];
+export const isUserAuthorized = async (req, res, next) => {
+  // get token from request header
+  const token = getAuthToken(req.headers);
 
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.replace('Bearer ', '');
+  try {
+    const data = jwt.verify(token, JWT_SECRET);
+    if (typeof data !== 'string') {
+      const user = await UserModel.findById(data._id).catch((error) => {
+        console.error('Error finding user:', error);
+        return null;
+      });
 
-    if (token) {
-      try {
-        const data = jwt.verify(token, JWT_SECRET);
-        if (typeof data !== 'string') {
-          const user = await UserModel.findById(data._id).catch((error) => {
-            console.error('Error finding user:', error);
-            return null;
-          });
-
-          if (user) {
-            request.user = user;
-            request.token = token;
-            return next();
-          }
-        }
-      } catch (error) {
-        console.error('Token verification error:', error);
+      if (user) {
+        req.user = user;
+        req.token = token;
+        return next();
       }
     }
+  } catch (error) {
+    console.error('Token verification error:', error);
   }
-  return response.status(401).json({ success: false, error: 'Unauthorized' });
 };
 
 // ✅ Middleware to check if an ADMIN is authorized
 export const isAdminAuthorized = async (req, res, next) => {
-  const authHeader = req.headers['authorization'];
+  // get token from request header
+  const token = getAuthToken(req.headers);
 
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.replace('Bearer ', '');
+  if (token) {
+    try {
+      const data = jwt.verify(token, JWT_SECRET);
 
-    if (token) {
-      try {
-        const data = jwt.verify(token, JWT_SECRET);
-
-        if (typeof data !== 'string') {
-          const admin = await AdminUserModel.findById(data.id).catch(
-            (error) => {
-              console.error('Error finding admin:', error);
-              return null;
-            }
-          );
-
-          if (admin) {
-            req.admin = admin;
-            req.token = token;
-            return next();
+      if (typeof data !== 'string') {
+        const admin = await AdminUserModel.findById(data.id).catch(
+          (error) => {
+            console.error('Error finding admin:', error);
+            return null;
           }
+        );
+
+        if (admin) {
+          req.admin = admin;
+          req.token = token;
+          return next();
         }
-      } catch (error) {
-        console.error('❌ Admin Token verification error:', error);
-        return res.status(401).json({ success: false, error: 'Invalid token' });
+        else {
+          return res.status(404).json({ success: false, error: 'Admin user not found' });
+        }
       }
+    } catch (error) {
+      console.error('❌ Admin Token verification error:', error);
+      return res.status(401).json({ success: false, error: 'Invalid token' });
     }
   }
-
-  return res.status(401).json({ success: false, error: 'Admin access denied' });
 };
 
 // ✅ Ensure price is a float

@@ -5,7 +5,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import AdminUserModel from "../../models/admin-users.js";
 import UserModel from "../../models/users.js"; // Import the User model
-import { isAdminAuthorized } from "../../utils/authUtils.js";
+import { isAdminAuthorized, generateAdminAuthToken, getAuthToken } from "../../utils/authUtils.js";
 import ImageModel from "../../models/images.js";
 
 const router = express.Router();
@@ -44,14 +44,30 @@ router.post("/login", async (req, res) => {
 
         console.log("✅ Password matches!");
 
-        const token = jwt.sign(
-            { id: admin._id, role: admin.role },
-            process.env.JWT_SECRET,
-            { expiresIn: "1h" }
-        );
-
+        const token = generateAdminAuthToken(admin, '1hr');
         res.status(200).json({ message: "Admin logged in", token, email: admin.email });
     } catch (error) {
+        console.error("❌ Server error:", error);
+        res.status(500).json({ message: "Server error", error });
+    }
+});
+
+// ✅ NEW: renew jwt token when it is close to expired after ~1hr
+router.post('/renew_token', isAdminAuthorized, (req, res) => {
+    const token = getAuthToken(req.headers);
+
+    // generate & return a new token if the token is valid
+    try{
+        jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+            if(err){
+                return res.status(401).send('Invalid refresh token');
+            }
+
+            const newToken = generateAdminAuthToken(decoded, '1hr');
+            res.status(200).json({ token: newToken });
+        })
+    }
+    catch(error){
         console.error("❌ Server error:", error);
         res.status(500).json({ message: "Server error", error });
     }
@@ -80,11 +96,26 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
         
         // query for specific stage status if provided (pending images might not have statuses so include those)
         const stage = req.query.stage;
-        const query = (stage === 'review') ? 
+        const queryStage = (stage === 'review') ? 
             { $or: [{ stage: 'review' }, { stage: { $exists: false } }] } :
             (
                 stage ? { stage: stage } : {}
             );
+        
+        // query for artist name or title if provided
+        const input = req.query.input;
+        const queryInput = (input) ? { 
+            $and: [{ 
+                $or: [
+                    { artistName: { $regex: input, $options: 'i' } },
+                    { name: { $regex: input, $options: 'i' } }
+                ]
+            }] } : {};
+
+        const query = {
+            ...queryStage,
+            ...queryInput,
+        };
 
         // count total #pages & return empty page if overbound
         const totalCount = await ImageModel.countDocuments(query);
@@ -95,8 +126,8 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
                 images: [],
                 pagination: {
                     currentPage: 1,
-                    totalPages: totalPages,
-                    totalImages: totalCount,
+                    totalPages: 1,
+                    totalImages: 0,
                 },
             });
         }
