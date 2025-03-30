@@ -7,8 +7,16 @@ import AdminUserModel from "../../models/admin-users.js";
 import UserModel from "../../models/users.js"; // Import the User model
 import { isAdminAuthorized, generateAdminAuthToken, getAuthToken } from "../../utils/authUtils.js";
 import ImageModel from "../../models/images.js";
+import cloudinary from "cloudinary";
 
 const router = express.Router();
+
+// Make sure cloudinary config is set
+cloudinary.v2.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD,
+    api_key: process.env.CLOUDINARY_API,
+    api_secret: process.env.CLOUDINARY_SECRET,
+  });
 
 router.post("/login", async (req, res) => {
     const { email, password } = req.body;
@@ -309,5 +317,89 @@ router.get("/user/:id", isAdminAuthorized, async (req, res) => {
         return res.status(500).json({ success: false, error: "Internal Server Error" });
     }
 });
+
+// ✅ Admin-only route to delete an artwork by ID and remove it from Cloudinary
+router.delete("/art/:id", isAdminAuthorized, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!id) {
+            return res.status(400).json({ success: false, error: "Image ID is required" });
+        }
+
+        const image = await ImageModel.findById(id);
+        if (!image) {
+            return res.status(404).json({ success: false, error: "Artwork not found" });
+        }
+
+        // Extract Cloudinary public_id from imageLink
+        const extractPublicId = (url) => {
+            const parts = url.split("/");
+            const folder = parts[parts.length - 2];
+            const fileName = parts[parts.length - 1].split(".")[0];
+            return `${folder}/${fileName}`;
+        };
+
+        const publicId = extractPublicId(image.imageLink);
+
+        // Delete from Cloudinary
+        const result = await cloudinary.v2.api.delete_resources([publicId], {
+            type: "upload",
+            resource_type: "image",
+        });
+
+        console.log(`🗑️ Cloudinary deletion result for ${publicId}:`, result);
+
+        // Then delete from MongoDB
+        await ImageModel.findByIdAndDelete(id);
+
+        res.status(200).json({ success: true, message: "Artwork and image deleted successfully" });
+    } catch (error) {
+        console.error("Error deleting artwork:", error);
+        res.status(500).json({ success: false, error: "Internal Server Error" });
+    }
+});
+
+// ✅ Admin-only route to delete a user and their Cloudinary profile picture
+router.delete("/user/:id", isAdminAuthorized, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!id) {
+            return res.status(400).json({ success: false, error: "User ID is required" });
+        }
+
+        const user = await UserModel.findById(id);
+        if (!user) {
+            return res.status(404).json({ success: false, error: "User not found" });
+        }
+
+        // Extract Cloudinary public_id from profilePictureLink if it exists
+        let publicId;
+        if (user.profilePictureLink) {
+            const parts = user.profilePictureLink.split("/");
+            const folder = parts[parts.length - 2]; // should be 'artists'
+            const fileName = parts[parts.length - 1].split(".")[0];
+            publicId = `${folder}/${fileName}`;
+
+            // Delete profile picture from Cloudinary
+            const result = await cloudinary.v2.api.delete_resources([publicId], {
+                type: "upload",
+                resource_type: "image",
+            });
+
+            console.log(`🗑️ Cloudinary deletion result for ${publicId}:`, result);
+        }
+
+        // Delete user from MongoDB
+        await UserModel.findByIdAndDelete(id);
+
+        res.status(200).json({ success: true, message: "User and profile picture deleted successfully" });
+    } catch (error) {
+        console.error("Error deleting user:", error);
+        res.status(500).json({ success: false, error: "Internal Server Error" });
+    }
+});
+
 
 export default router;
