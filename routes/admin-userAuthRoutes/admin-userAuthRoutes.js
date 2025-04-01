@@ -332,7 +332,6 @@ router.delete("/art/:id", isAdminAuthorized, async (req, res) => {
             return res.status(404).json({ success: false, error: "Artwork not found" });
         }
 
-        // Extract Cloudinary public_id from imageLink
         const extractPublicId = (url) => {
             const parts = url.split("/");
             const folder = parts[parts.length - 2];
@@ -342,18 +341,28 @@ router.delete("/art/:id", isAdminAuthorized, async (req, res) => {
 
         const publicId = extractPublicId(image.imageLink);
 
-        // Delete from Cloudinary
-        const result = await cloudinary.v2.api.delete_resources([publicId], {
-            type: "upload",
-            resource_type: "image",
-        });
+        let cloudinaryResult = { deleted: {} };
+        try {
+            cloudinaryResult = await cloudinary.v2.api.delete_resources([publicId], {
+                type: "upload",
+                resource_type: "image",
+            });
+            console.log(`🗑️ Cloudinary deletion result for ${publicId}:`, cloudinaryResult);
+        } catch (cloudError) {
+            console.error("Cloudinary deletion error (continuing):", cloudError);
+            // Handle Cloudinary API errors gracefully (log, skip, and continue)
+        }
 
-        console.log(`🗑️ Cloudinary deletion result for ${publicId}:`, result);
-
-        // Then delete from MongoDB
         await ImageModel.findByIdAndDelete(id);
 
-        res.status(200).json({ success: true, message: "Artwork and image deleted successfully" });
+        res.status(200).json({
+            success: true,
+            message: "Artwork and image deleted successfully",
+            deletedAssets: {
+                artworkId: id,
+                cloudinaryDeleted: cloudinaryResult.deleted,
+            },
+        });
     } catch (error) {
         console.error("Error deleting artwork:", error);
         res.status(500).json({ success: false, error: "Internal Server Error" });
@@ -369,34 +378,86 @@ router.delete("/user/:id", isAdminAuthorized, async (req, res) => {
             return res.status(400).json({ success: false, error: "User ID is required" });
         }
 
+        // Step 1: Find the user in the database
         const user = await UserModel.findById(id);
         if (!user) {
             return res.status(404).json({ success: false, error: "User not found" });
         }
 
-        // Extract Cloudinary public_id from profilePictureLink if it exists
-        let publicId;
+        // Step 2: Find and delete all images associated with the user
+        // Use the user's _id to filter artwork in the ImageModel
+        const userImages = await ImageModel.find({ userId: id }); // Assuming userId is the field linking images to users
+
+        // Step 3: Extract and delete each image's public_id from Cloudinary
+        const publicIdsToDelete = [];
+        for (const image of userImages) {
+            const extractPublicId = (url) => {
+                const parts = url.split("/");
+                const folder = parts[parts.length - 2]; // e.g., 'artwork'
+                const fileName = parts[parts.length - 1].split(".")[0];
+                return `${folder}/${fileName}`;
+            };
+
+            const publicId = extractPublicId(image.imageLink);
+            publicIdsToDelete.push(publicId);
+        }
+
+        // Step 4: Delete all images from Cloudinary in bulk
+        let cloudinaryResult = { deleted: {} };
+        if (publicIdsToDelete.length > 0) {
+            try {
+                cloudinaryResult = await cloudinary.v2.api.delete_resources(publicIdsToDelete, {
+                    type: "upload",
+                    resource_type: "image",
+                });
+                console.log(`🗑️ Cloudinary deletion result for user's artwork:`, cloudinaryResult);
+            } catch (cloudError) {
+                console.error("Cloudinary deletion error (continuing with other deletions):", cloudError);
+                // Handle Cloudinary API errors gracefully (log, skip, and continue)
+            }
+        }
+
+        // Step 5: Delete all images from MongoDB
+        await ImageModel.deleteMany({ userId: id });
+
+        // Step 6: Delete the user's profile picture from Cloudinary if it exists
+        let profilePicPublicId;
         if (user.profilePictureLink) {
             const parts = user.profilePictureLink.split("/");
             const folder = parts[parts.length - 2]; // should be 'artists'
             const fileName = parts[parts.length - 1].split(".")[0];
-            publicId = `${folder}/${fileName}`;
+            profilePicPublicId = `${folder}/${fileName}`;
 
-            // Delete profile picture from Cloudinary
-            const result = await cloudinary.v2.api.delete_resources([publicId], {
-                type: "upload",
-                resource_type: "image",
-            });
-
-            console.log(`🗑️ Cloudinary deletion result for ${publicId}:`, result);
+            try {
+                const profilePicResult = await cloudinary.v2.api.delete_resources([profilePicPublicId], {
+                    type: "upload",
+                    resource_type: "image",
+                });
+                console.log(`🗑️ Cloudinary deletion result for profile picture ${profilePicPublicId}:`, profilePicResult);
+            } catch (cloudError) {
+                console.error("Cloudinary deletion error for profile picture (continuing):", cloudError);
+                // Handle Cloudinary API errors gracefully
+            }
         }
 
-        // Delete user from MongoDB
+        // Step 7: Delete the user from MongoDB
         await UserModel.findByIdAndDelete(id);
 
-        res.status(200).json({ success: true, message: "User and profile picture deleted successfully" });
+        // Step 8: Return a success response with a summary of deleted assets
+        const deletedAssetsSummary = {
+            userId: id,
+            profilePictureDeleted: user.profilePictureLink ? true : false,
+            artworkDeletedCount: userImages.length,
+            cloudinaryDeleted: cloudinaryResult.deleted,
+        };
+
+        res.status(200).json({
+            success: true,
+            message: "User, profile picture, and all associated artwork deleted successfully",
+            deletedAssets: deletedAssetsSummary,
+        });
     } catch (error) {
-        console.error("Error deleting user:", error);
+        console.error("Error deleting user and artwork:", error);
         res.status(500).json({ success: false, error: "Internal Server Error" });
     }
 });
