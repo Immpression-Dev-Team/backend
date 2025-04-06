@@ -5,7 +5,7 @@ import { isUserAuthorized } from '../../utils/authUtils.js';
 import Stripe from 'stripe';
 
 // env variable
-const stripe = Stripe('your-secret-key');
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 const router = express.Router();
 
