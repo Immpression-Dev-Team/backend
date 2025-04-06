@@ -39,8 +39,17 @@ router.post('/image', isUserAuthorized, async (request, response) => {
     const userId = request.user._id;
 
     // validate data in backend
-    const { artistName, name, imageLink, price, description, category } =
-      request.body;
+    const {
+      artistName,
+      name,
+      imageLink,
+      price,
+      description,
+      category,
+      dimensions,
+      isSigned,
+      isFramed,
+    } = request.body;    
 
     if (
       !artistName ||
@@ -56,6 +65,17 @@ router.post('/image', isUserAuthorized, async (request, response) => {
           'Please fill in all fields, select a category, and select an image',
       });
     }
+
+    if (
+      !dimensions ||
+      isNaN(dimensions.height) ||
+      isNaN(dimensions.width)
+    ) {
+      return response.status(400).json({
+        success: false,
+        error: "Dimensions must include valid height and width.",
+      });
+    }    
 
     // ensure price is a float
     const price_val = validatePrice(price);
@@ -86,11 +106,17 @@ router.post('/image', isUserAuthorized, async (request, response) => {
       userId: userId,
       artistName: artistName,
       name: name,
-      imageLink: imageLink, // Make sure this matches the Cloudinary secure_url
+      imageLink: imageLink,
       price: price_val,
       description: description,
       category: category,
-    });
+      dimensions: {
+        height: parseFloat(dimensions.height),
+        width: parseFloat(dimensions.width),
+      },
+      isSigned: Boolean(isSigned),
+      isFramed: Boolean(isFramed),
+    });    
     console.log('New Image Saved:', newImage);
 
     // Sending a success response after image upload
