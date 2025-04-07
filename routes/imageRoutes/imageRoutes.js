@@ -174,23 +174,38 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
     const userId = req.user._id;
 
     const user = await UserModel.findById(userId)
-      .populate('likedImages', '_id artistName name imageLink description price category createdAt')
+      .populate({
+        path: 'likedImages',
+        select: '_id name imageLink description price category createdAt userId',
+        populate: { path: 'userId', select: 'name' },
+      })
       .select('likedImages');
 
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
+    // Handle missing userId (artist) gracefully
+    const formattedImages = user.likedImages.map(image => ({
+      _id: image._id,
+      name: image.name,
+      imageLink: image.imageLink,
+      description: image.description,
+      price: image.price,
+      category: image.category,
+      createdAt: image.createdAt,
+      artist: { name: image.userId?.name || 'Unknown Artist' } // handle missing userId
+    }));
+
     res.status(200).json({
       success: true,
-      images: user.likedImages,
+      images: formattedImages,
     });
   } catch (error) {
     console.error('Error fetching liked images:', error);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
-
 
 // GET route for fetching an image by ID
 router.get('/image/:id', isUserAuthorized, async (request, response) => {
