@@ -9,6 +9,7 @@ import multer from 'multer';
 
 // Importing the ImageModel from the models directory
 import ImageModel from '../../models/images.js';
+import UserModel from '../../models/users.js';
 
 // Importing the isUserAuthorized function from the utils directory
 import {
@@ -35,10 +36,7 @@ import { IMAGE_STAGE } from "../../models/images.js";
 // POST route for uploading an image
 router.post('/image', isUserAuthorized, async (request, response) => {
   try {
-    // Get the authenticated user's ID
     const userId = request.user._id;
-
-    // validate data in backend
     const {
       artistName,
       name,
@@ -61,23 +59,17 @@ router.post('/image', isUserAuthorized, async (request, response) => {
     ) {
       return response.status(400).json({
         success: false,
-        error:
-          'Please fill in all fields, select a category, and select an image',
+        error: 'Please fill in all fields, select a category, and select an image',
       });
     }
 
-    if (
-      !dimensions ||
-      isNaN(dimensions.height) ||
-      isNaN(dimensions.width)
-    ) {
+    if (!dimensions || isNaN(dimensions.height) || isNaN(dimensions.width)) {
       return response.status(400).json({
         success: false,
         error: "Dimensions must include valid height and width.",
       });
     }    
 
-    // ensure price is a float
     const price_val = validatePrice(price);
     if (!price_val) {
       return response.status(400).json({
@@ -86,7 +78,6 @@ router.post('/image', isUserAuthorized, async (request, response) => {
       });
     }
 
-    // ensure image link is valid & exists
     if (!validateImageLink(imageLink)) {
       return response.status(400).json({
         success: false,
@@ -96,12 +87,9 @@ router.post('/image', isUserAuthorized, async (request, response) => {
 
     const res = await fetch(imageLink);
     if (res.status !== 200) {
-      return response
-        .status(400)
-        .json({ success: false, error: 'Image is not accessible' });
+      return response.status(400).json({ success: false, error: 'Image is not accessible' });
     }
 
-    // Create a new image document in the database
     const newImage = await ImageModel.create({
       userId: userId,
       artistName: artistName,
@@ -119,22 +107,16 @@ router.post('/image', isUserAuthorized, async (request, response) => {
     });    
     console.log('New Image Saved:', newImage);
 
-    // Sending a success response after image upload
     return response.status(200).json({
       success: true,
       image: newImage,
       message: 'Image uploaded and saved successfully',
     });
   } catch (err) {
-    // catch validation error from mongoose
     if (err instanceof mongoose.Error.ValidationError) {
-      const errorMsg = Object.values(err.errors)
-        .map((error) => error.message)
-        .join(', ');
+      const errorMsg = Object.values(err.errors).map((error) => error.message).join(', ');
       return response.status(400).json({ success: false, error: errorMsg });
     }
-
-    // Handling errors and sending an error response
     console.error('Error Saving Image:', err);
     return response.status(500).json({ success: false, error: err.message });
   }
@@ -186,6 +168,44 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
   }
 });
 
+// Route to fetch all images liked by the current user
+router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const user = await UserModel.findById(userId)
+      .populate({
+        path: 'likedImages',
+        select: '_id name imageLink description price category createdAt userId',
+        populate: { path: 'userId', select: 'name' },
+      })
+      .select('likedImages');
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    // Handle missing userId (artist) gracefully
+    const formattedImages = user.likedImages.map(image => ({
+      _id: image._id,
+      name: image.name,
+      imageLink: image.imageLink,
+      description: image.description,
+      price: image.price,
+      category: image.category,
+      createdAt: image.createdAt,
+      artist: { name: image.userId?.name || 'Unknown Artist' } // handle missing userId
+    }));
+
+    res.status(200).json({
+      success: true,
+      images: formattedImages,
+    });
+  } catch (error) {
+    console.error('Error fetching liked images:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
 
 // GET route for fetching an image by ID
 router.get('/image/:id', isUserAuthorized, async (request, response) => {
@@ -611,42 +631,48 @@ router.get('/current-bid/:imageId', isUserAuthorized, async (req, res) => {
 router.post('/image/:id/like', isUserAuthorized, async (req, res) => {
   try {
     const imageId = req.params.id;
-    const userId = req.user._id; // Authenticated user ID
+    const userId = req.user._id;
 
-    // Find the image and ONLY return the likes array (avoiding full document save)
     const image = await ImageModel.findById(imageId).select('likes');
-    if (!image) {
-      return res.status(404).json({ success: false, error: 'Image not found' });
+    const user = await UserModel.findById(userId).select('likedImages');
+
+    if (!image || !user) {
+      return res.status(404).json({ success: false, error: 'Image or user not found' });
     }
 
     let hasLiked = image.likes.includes(userId);
 
     if (hasLiked) {
-      // Unlike the image
       await ImageModel.updateOne(
         { _id: imageId },
-        { $pull: { likes: userId } } // Removes userId from the likes array
+        { $pull: { likes: userId } }
       );
-      hasLiked = false;
+
+      await UserModel.updateOne(
+        { _id: userId },
+        { $pull: { likedImages: imageId } }
+      );
     } else {
-      // Like the image
       await ImageModel.updateOne(
         { _id: imageId },
-        { $addToSet: { likes: userId } } // Adds userId to the likes array
+        { $addToSet: { likes: userId } }
       );
-      hasLiked = true;
+
+      await UserModel.updateOne(
+        { _id: userId },
+        { $addToSet: { likedImages: imageId } }
+      );
     }
 
-    // Get updated likes count
     const updatedImage = await ImageModel.findById(imageId).select('likes');
 
     res.status(200).json({
       success: true,
       likesCount: updatedImage.likes.length,
-      hasLiked,
+      hasLiked: !hasLiked,
     });
   } catch (error) {
-    console.error('Error liking/unliking image:', error);
+    console.error('Error toggling like:', error);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -714,6 +740,8 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
     return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
+
+
 
 // Exporting the router as the default export
 export default router;
