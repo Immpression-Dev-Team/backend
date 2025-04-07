@@ -83,6 +83,12 @@ const UserSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    likedImages: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Image',
+      }
+    ],    
   },
   {
     // Add timestamps for createdAt and updatedAt
