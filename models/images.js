@@ -51,9 +51,9 @@ const ImageSchema = new Schema(
       minLength: [4, "Name should be at least 4 characters"],
       maxLength: [30, "Name should be less than 30 characters"],
     },
-    imageLink: { 
-      type: String, 
-      required: function() { return this.stage === IMAGE_STAGE.APPROVED; } 
+    imageLink: {
+      type: String,
+      required: function () { return this.stage === IMAGE_STAGE.APPROVED; }
     },
     price: {
       type: Number,
@@ -81,13 +81,26 @@ const ImageSchema = new Schema(
         amount: { type: Number, required: true },
       },
     ],
-    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }], 
-
+    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    dimensions: {
+      height: { type: Number, required: true }, // in inches or cm, your choice
+      width: { type: Number, required: true },
+    },
+    isSigned: {
+      type: Boolean,
+      required: true,
+      default: false,
+    },
+    isFramed: {
+      type: Boolean,
+      required: true,
+      default: false,
+    },
     // New fields for review system
     stage: {
       type: String,
       enum: STAGE_ENUM,
-      default: IMAGE_STAGE.REVIEW, 
+      default: IMAGE_STAGE.REVIEW,
     },
     reviewedByEmail: { type: String }, // ✅ Stores the email of the reviewer
     reviewedAt: { type: Date }, // ✅ Stores the timestamp of approval/rejection
