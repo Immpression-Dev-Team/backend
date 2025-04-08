@@ -25,7 +25,7 @@ async function createAdmin() {
       email,
       name: "AJ Premo",
       // ✅ Save the argon2 hash
-      password: "Ajajlws24",
+      //password: "Ajajlws24",
       role: "super-admin",
     });
 
