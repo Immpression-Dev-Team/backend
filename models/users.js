@@ -88,7 +88,8 @@ const UserSchema = new Schema(
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Image',
       }
-    ],    
+    ],
+    boughtImages: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Image' }],    
   },
   {
     // Add timestamps for createdAt and updatedAt

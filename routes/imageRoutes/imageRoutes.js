@@ -141,7 +141,6 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
 
     const skip = (page - 1) * limit;
 
-    // Include `userId` in the response
     const images = await ImageModel.find(query)
       .limit(limit)
       .skip(skip)
@@ -185,7 +184,6 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    // Handle missing userId (artist) gracefully
     const formattedImages = user.likedImages.map(image => ({
       _id: image._id,
       name: image.name,
@@ -194,7 +192,7 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
       price: image.price,
       category: image.category,
       createdAt: image.createdAt,
-      artist: { name: image.userId?.name || 'Unknown Artist' } // handle missing userId
+      artist: { name: image.userId?.name || 'Unknown Artist' }
     }));
 
     res.status(200).json({
@@ -207,16 +205,50 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
   }
 });
 
+// Route to fetch all images bought by the current user
+router.get('/images/bought', isUserAuthorized, async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const user = await UserModel.findById(userId)
+      .populate({
+        path: 'boughtImages',
+        select: '_id name imageLink description price category createdAt userId',
+        populate: { path: 'userId', select: 'name' },
+      })
+      .select('boughtImages');
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    const formattedImages = user.boughtImages.map(image => ({
+      _id: image._id,
+      name: image.name,
+      imageLink: image.imageLink,
+      description: image.description,
+      price: image.price,
+      category: image.category,
+      createdAt: image.createdAt,
+      artist: { name: image.userId?.name || 'Unknown Artist' },
+    }));
+
+    res.status(200).json({
+      success: true,
+      images: formattedImages,
+    });
+  } catch (error) {
+    console.error('Error fetching bought images:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
 // GET route for fetching an image by ID
 router.get('/image/:id', isUserAuthorized, async (request, response) => {
   try {
-    // Getting the userId from the authenticated user
     const userId = request.user._id;
-
-    // Get the image ID from the request parameters
     const imageId = request.params.id;
 
-    // Find the image in the database by its ID and user ID
     const image = await ImageModel.findOne({ _id: imageId, userId: userId });
 
     if (!image) {
@@ -225,7 +257,6 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
         .json({ success: false, error: 'Image not found' });
     }
 
-    // Prepare the response object
     const responseData = {
       _id: image._id,
       artistName: image.artistName,
@@ -237,7 +268,6 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
       views: image.views,
     };
 
-    // Send the combined JSON response
     response.json(responseData);
   } catch (err) {
     console.error(err);
@@ -252,12 +282,9 @@ router.patch(
   isUserAuthorized,
   async (request, response, next) => {
     try {
-      // Getting the userId from the authenticated user
       const userId = request.user._id;
-      // Getting the imageId from the request parameters
       const imageId = request.params.id;
 
-      // Prepare the update object
       const updateImage = {};
       if (request.body.name) updateImage.name = request.body.name;
       if (request.file) {
@@ -267,7 +294,6 @@ router.patch(
         };
       }
       if (request.body.price) {
-        // ensure price is a float
         const price_val = validatePrice(request.body.price);
         if (!price_val) {
           return response.status(400).json({
@@ -280,17 +306,14 @@ router.patch(
       if (request.body.description)
         updateImage.description = request.body.description;
       if (request.body.category) updateImage.category = request.body.category;
-      // Increment the version key
       updateImage.$inc = { __v: 1 };
 
-      // Finding and updating the image document in the database
       const updatedImage = await ImageModel.findOneAndUpdate(
         { _id: imageId, userId: userId },
         updateImage,
         { new: true, runValidators: true }
       );
 
-      // If the image is not found, sending a 404 response
       if (!updatedImage) {
         return response.status(404).json({
           success: false,
@@ -298,14 +321,12 @@ router.patch(
         });
       }
 
-      // Sending a success response with the updated image data
       response.status(200).json({
         success: true,
         msg: 'Image updated successfully',
         image: updatedImage,
       });
     } catch (error) {
-      // Handling validation errors from mongoose
       if (error instanceof mongoose.Error.ValidationError) {
         for (let field in error.errors) {
           const msg = error.errors[field].message;
@@ -313,9 +334,7 @@ router.patch(
         }
       }
 
-      // Logging the error to the console
       console.error('Error updating image:', error);
-      // Sending an internal server error response to the client
       response
         .status(500)
         .json({ success: false, error: 'Internal Server Error' });
@@ -326,32 +345,26 @@ router.patch(
 // Route to delete an image by id
 router.delete('/image/:id', isUserAuthorized, async (request, response) => {
   try {
-    // Getting the userId from the authenticated user
     const userId = request.user.id;
-    // Getting the imageId from the request parameters
     const imageId = request.params.id;
 
-    // If userId is not provided, sending a 401 response
     if (!userId) {
       return response
         .status(401)
         .json({ success: false, error: 'User not authorized' });
     }
 
-    // If imageId is not provided, sending a 400 response
     if (!imageId) {
       return response
         .status(400)
         .json({ success: false, error: 'Image ID is required' });
     }
 
-    // Finding and deleting the image document in the database
     const deletedImage = await ImageModel.findOneAndDelete({
       _id: imageId,
       userId: userId,
     });
 
-    // If the image is not found, sending a 404 response
     if (!deletedImage) {
       return response.status(404).json({
         success: false,
@@ -359,14 +372,11 @@ router.delete('/image/:id', isUserAuthorized, async (request, response) => {
       });
     }
 
-    // Sending a success response indicating the image was deleted
     response
       .status(200)
       .json({ success: true, message: 'Image deleted successfully' });
   } catch (error) {
-    // Logging the error to the console
     console.error('Error deleting image:', error);
-    // Sending an internal server error response to the client
     response
       .status(500)
       .json({ success: false, error: 'Internal Server Error' });
@@ -376,74 +386,33 @@ router.delete('/image/:id', isUserAuthorized, async (request, response) => {
 // Route to get all images for the authenticated user
 router.get('/images', isUserAuthorized, async (request, response) => {
   try {
-    // Getting the userId from the authenticated user
     const userId = request.user.id;
+    const { stage } = request.query;
 
-    // Finding all image documents for the user in the database
-    const images = await ImageModel.find({ userId: userId });
+    const query = { userId: userId };
+    if (stage) {
+      if (!Object.values(IMAGE_STAGE).includes(stage)) {
+        return response.status(400).json({
+          success: false,
+          error: 'Invalid stage value',
+        });
+      }
+      query.stage = stage;
+    }
 
-    // Sending a success response with the images data
+    const images = await ImageModel.find(query);
     response.status(200).json({ success: true, images });
   } catch (error) {
-    // Logging the error to the console
     console.error('Error fetching images:', error);
-    // Sending an internal server error response to the client
-    response
-      .status(500)
-      .json({ success: false, error: 'Internal Server Error' });
+    response.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
-
-// // Route to update the view count of an image by id
-// router.patch('/viewcount/:id/', isUserAuthorized, async (request, response) => {
-//   try {
-//     // Getting the userId from the authenticated user
-//     const userId = request.user.id;
-//     // Getting the imageId from the request parameters
-//     const imageId = request.params.id;
-
-//     // Finding and updating the viewcount
-//     const increaseCount = await ImageModel.findOneAndUpdate(
-//       {
-//         _id: imageId,
-//         userId: userId,
-//       },
-//       {
-//         $inc: {
-//           viewCount: 1,
-//         },
-//       },
-//       // Return the updated document
-//       { new: true }
-//     );
-
-//     // Check if increaseCount is null (no document found)
-//     if (!increaseCount) {
-//       return response
-//         .status(404)
-//         .json({ success: false, error: 'Image with id not found' });
-//     }
-
-//     // If the image is found and the view count is increased
-//     return response
-//       .status(200)
-//       .json({ success: true, message: 'Image view count updated' });
-//   } catch (error) {
-//     // Logging the error to the console
-//     console.error('Error updating image view count:', error);
-//     // Sending an internal server error response to the client
-//     return response
-//       .status(500)
-//       .json({ success: false, error: 'Internal Server Error' });
-//   }
-// });
 
 // Route to update the view count of an image by id
 router.patch('/increment-image-views/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Validate the ID parameter
     if (!id || typeof id !== 'string') {
       console.log('Invalid or missing image ID.');
       return res.status(400).json({
@@ -454,7 +423,6 @@ router.patch('/increment-image-views/:id', async (req, res) => {
 
     console.log(`Received request to increment views for image ID: ${id}`);
 
-    // Find image by ID and increment view count
     const updatedImage = await ImageModel.findByIdAndUpdate(
       id,
       { $inc: { views: 1 } },
@@ -495,7 +463,6 @@ router.get('/get-image-views/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Validate the ID parameter
     if (!id || typeof id !== 'string') {
       return res.status(400).json({
         success: false,
@@ -503,7 +470,6 @@ router.get('/get-image-views/:id', async (req, res) => {
       });
     }
 
-    // Find the image by ID
     const image = await ImageModel.findById(id);
 
     if (!image) {
@@ -513,10 +479,9 @@ router.get('/get-image-views/:id', async (req, res) => {
       });
     }
 
-    // Return the view count of the image
     res.status(200).json({
       success: true,
-      views: image.views, // Return the views count from the image document
+      views: image.views,
       image: {
         id: image._id,
         views: image.views,
@@ -557,25 +522,20 @@ router.post('/place-bid/:imageId', isUserAuthorized, async (req, res) => {
         .json({ success: false, error: 'Bid must be higher than current bid' });
     }
 
-    // Ensure `bids` array is initialized
     if (!image.bids) {
       image.bids = [];
     }
 
-    // Find existing bid by user
     const existingBidIndex = image.bids.findIndex(
       (bid) => bid.userId.toString() === userId.toString()
     );
 
     if (existingBidIndex !== -1) {
-      // Update existing bid
       image.bids[existingBidIndex].amount = bidAmount;
     } else {
-      // Add new bid
       image.bids.push({ userId, amount: bidAmount });
     }
 
-    // Only update `bids`, `currentBid`, and `highestBidder`
     await ImageModel.findByIdAndUpdate(imageId, {
       $set: { currentBid: bidAmount, highestBidder: userId },
       $push: { bids: { userId, amount: bidAmount } },
@@ -592,10 +552,44 @@ router.post('/place-bid/:imageId', isUserAuthorized, async (req, res) => {
   }
 });
 
+// Route to finalize a purchase
+router.post('/image/:imageId/buy', isUserAuthorized, async (req, res) => {
+  try {
+    const { imageId } = req.params;
+    const userId = req.user._id; // Buyer
+
+    if (!mongoose.Types.ObjectId.isValid(imageId)) {
+      return res.status(400).json({ success: false, error: 'Invalid image ID' });
+    }
+
+    const image = await ImageModel.findById(imageId);
+    if (!image) {
+      return res.status(404).json({ success: false, error: 'Image not found' });
+    }
+
+    image.stage = IMAGE_STAGE.SOLD;
+    image.highestBidder = userId;
+    await image.save();
+
+    await UserModel.updateOne(
+      { _id: userId },
+      { $addToSet: { boughtImages: imageId } }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Image purchased successfully',
+    });
+  } catch (error) {
+    console.error('Error finalizing purchase:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
 // Route to get the current highest bid for an image
 router.get('/current-bid/:imageId', isUserAuthorized, async (req, res) => {
   const { imageId } = req.params;
-  const userId = req.user._id; // Get the logged-in user's ID
+  const userId = req.user._id;
 
   try {
     if (!mongoose.Types.ObjectId.isValid(imageId)) {
@@ -611,15 +605,14 @@ router.get('/current-bid/:imageId', isUserAuthorized, async (req, res) => {
         .json({ success: false, error: 'Artwork not found' });
     }
 
-    // Find this user's bid (if it exists)
     const userBid = image.bids.find(
       (bid) => bid.userId.toString() === userId.toString()
     );
 
     res.status(200).json({
       success: true,
-      currentBid: image.currentBid, // The highest bid on this artwork
-      myBid: userBid ? userBid.amount : 0, // Show user's bid, or 0 if they haven't bid
+      currentBid: image.currentBid,
+      myBid: userBid ? userBid.amount : 0,
     });
   } catch (error) {
     console.error('Error fetching current bid:', error);
@@ -709,9 +702,8 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
   try {
     const { id } = req.params;
     const { stage } = req.body;
-    const userId = req.user._id; // Authenticated user
+    const userId = req.user._id;
 
-    // Validate stage input
     if (!Object.values(IMAGE_STAGE).includes(stage)) {
       return res.status(400).json({
         success: false,
@@ -719,7 +711,6 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
       });
     }
 
-    // Find and update the image
     const updatedImage = await ImageModel.findByIdAndUpdate(
       id,
       { stage, reviewedBy: userId, reviewedAt: new Date() },
@@ -740,8 +731,6 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
     return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
-
-
 
 // Exporting the router as the default export
 export default router;
