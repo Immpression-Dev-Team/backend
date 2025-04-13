@@ -47,7 +47,7 @@ router.post('/image', isUserAuthorized, async (request, response) => {
       dimensions,
       isSigned,
       isFramed,
-    } = request.body;    
+    } = request.body;
 
     if (
       !artistName ||
@@ -68,7 +68,7 @@ router.post('/image', isUserAuthorized, async (request, response) => {
         success: false,
         error: "Dimensions must include valid height and width.",
       });
-    }    
+    }
 
     const price_val = validatePrice(price);
     if (!price_val) {
@@ -104,7 +104,8 @@ router.post('/image', isUserAuthorized, async (request, response) => {
       },
       isSigned: Boolean(isSigned),
       isFramed: Boolean(isFramed),
-    });    
+      stage: IMAGE_STAGE.REVIEW, // Set default stage
+    });
     console.log('New Image Saved:', newImage);
 
     return response.status(200).json({
@@ -195,6 +196,9 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
       artist: { name: image.userId?.name || 'Unknown Artist' }
     }));
 
+    console.log('Fetched user with likedImages:', user);
+    console.log('Formatted liked images:', formattedImages);
+
     res.status(200).json({
       success: true,
       images: formattedImages,
@@ -232,6 +236,9 @@ router.get('/images/bought', isUserAuthorized, async (req, res) => {
       createdAt: image.createdAt,
       artist: { name: image.userId?.name || 'Unknown Artist' },
     }));
+
+    console.log('Fetched user with boughtImages:', user);
+    console.log('Formatted bought images:', formattedImages);
 
     res.status(200).json({
       success: true,
@@ -386,7 +393,7 @@ router.delete('/image/:id', isUserAuthorized, async (request, response) => {
 // Route to get all images for the authenticated user
 router.get('/images', isUserAuthorized, async (request, response) => {
   try {
-    const userId = request.user.id;
+    const userId = request.user._id; // Fix: Use _id instead of id
     const { stage } = request.query;
 
     const query = { userId: userId };
@@ -400,7 +407,9 @@ router.get('/images', isUserAuthorized, async (request, response) => {
       query.stage = stage;
     }
 
-    const images = await ImageModel.find(query);
+    const images = await ImageModel.find(query).select('_id name imageLink description price category createdAt stage userId');
+    console.log('Query for images:', query);
+    console.log('Fetched images:', images);
     response.status(200).json({ success: true, images });
   } catch (error) {
     console.error('Error fetching images:', error);
@@ -567,14 +576,21 @@ router.post('/image/:imageId/buy', isUserAuthorized, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Image not found' });
     }
 
+    if (image.stage === IMAGE_STAGE.SOLD) {
+      return res.status(400).json({ success: false, error: 'Image is already sold' });
+    }
+
     image.stage = IMAGE_STAGE.SOLD;
     image.highestBidder = userId;
     await image.save();
 
-    await UserModel.updateOne(
+    const updateResult = await UserModel.updateOne(
       { _id: userId },
       { $addToSet: { boughtImages: imageId } }
     );
+    if (updateResult.modifiedCount === 0) {
+      console.error('Failed to update boughtImages for user:', userId);
+    }
 
     res.status(200).json({
       success: true,
@@ -636,25 +652,29 @@ router.post('/image/:id/like', isUserAuthorized, async (req, res) => {
     let hasLiked = image.likes.includes(userId);
 
     if (hasLiked) {
-      await ImageModel.updateOne(
+      const imageUpdate = await ImageModel.updateOne(
         { _id: imageId },
         { $pull: { likes: userId } }
       );
-
-      await UserModel.updateOne(
+      const userUpdate = await UserModel.updateOne(
         { _id: userId },
         { $pull: { likedImages: imageId } }
       );
+      if (imageUpdate.modifiedCount === 0 || userUpdate.modifiedCount === 0) {
+        console.error('Failed to update likes/likedImages:', { imageId, userId });
+      }
     } else {
-      await ImageModel.updateOne(
+      const imageUpdate = await ImageModel.updateOne(
         { _id: imageId },
         { $addToSet: { likes: userId } }
       );
-
-      await UserModel.updateOne(
+      const userUpdate = await UserModel.updateOne(
         { _id: userId },
         { $addToSet: { likedImages: imageId } }
       );
+      if (imageUpdate.modifiedCount === 0 || userUpdate.modifiedCount === 0) {
+        console.error('Failed to update likes/likedImages:', { imageId, userId });
+      }
     }
 
     const updatedImage = await ImageModel.findById(imageId).select('likes');
@@ -729,6 +749,27 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
   } catch (error) {
     console.error("Error updating image stage:", error);
     return res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
+// Route to get the total number of likes for a user's images
+router.get('/user/total-likes', isUserAuthorized, async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // Find all images uploaded by the user
+    const userImages = await ImageModel.find({ userId: userId }).select('likes');
+
+    // Calculate the total number of likes
+    const totalLikes = userImages.reduce((sum, image) => sum + (image.likes?.length || 0), 0);
+
+    res.status(200).json({
+      success: true,
+      totalLikes,
+    });
+  } catch (error) {
+    console.error('Error fetching total likes:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
 
