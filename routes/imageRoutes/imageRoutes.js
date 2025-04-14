@@ -31,7 +31,11 @@ const upload = multer({ storage: storage });
 import { IMAGE_CATEGORY } from '../../models/images.js';
 
 // Import the IMAGE_STAGE enum
-import { IMAGE_STAGE } from "../../models/images.js";
+import { IMAGE_STAGE } from '../../models/images.js';
+import {
+  getCategoryCounts,
+  getUserImagesGroupedByStage,
+} from '../../utils/image.js';
 
 // POST route for uploading an image
 router.post('/image', isUserAuthorized, async (request, response) => {
@@ -59,14 +63,15 @@ router.post('/image', isUserAuthorized, async (request, response) => {
     ) {
       return response.status(400).json({
         success: false,
-        error: 'Please fill in all fields, select a category, and select an image',
+        error:
+          'Please fill in all fields, select a category, and select an image',
       });
     }
 
     if (!dimensions || isNaN(dimensions.height) || isNaN(dimensions.width)) {
       return response.status(400).json({
         success: false,
-        error: "Dimensions must include valid height and width.",
+        error: 'Dimensions must include valid height and width.',
       });
     }
 
@@ -87,7 +92,9 @@ router.post('/image', isUserAuthorized, async (request, response) => {
 
     const res = await fetch(imageLink);
     if (res.status !== 200) {
-      return response.status(400).json({ success: false, error: 'Image is not accessible' });
+      return response
+        .status(400)
+        .json({ success: false, error: 'Image is not accessible' });
     }
 
     const newImage = await ImageModel.create({
@@ -115,7 +122,9 @@ router.post('/image', isUserAuthorized, async (request, response) => {
     });
   } catch (err) {
     if (err instanceof mongoose.Error.ValidationError) {
-      const errorMsg = Object.values(err.errors).map((error) => error.message).join(', ');
+      const errorMsg = Object.values(err.errors)
+        .map((error) => error.message)
+        .join(', ');
       return response.status(400).json({ success: false, error: errorMsg });
     }
     console.error('Error Saving Image:', err);
@@ -135,17 +144,19 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
         return response
           .status(400)
           .json({ success: false, error: 'Please provide a valid category' });
-      } else {
-        query.category = category;
       }
     }
+
+    query.category = category;
 
     const skip = (page - 1) * limit;
 
     const images = await ImageModel.find(query)
       .limit(limit)
       .skip(skip)
-      .select('_id userId artistName name description price imageLink views category createdAt stage');
+      .select(
+        '_id userId artistName name description price imageLink views category createdAt stage'
+      );
 
     if (images.length === 0 && page > 1) {
       return response.status(200).json({ success: true, images: [] });
@@ -157,14 +168,16 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
     response.status(200).json({
       success: true,
       totalPages: totalPages,
-      currentPage: parseInt(page),
-      pageCount: limit,
+      currentPage: Number.parseInt(page),
+      limit,
       totalImages: totalImages,
       images,
     });
   } catch (error) {
     console.error('Error fetching images:', error);
-    response.status(500).json({ success: false, error: 'Internal Server Error' });
+    response
+      .status(500)
+      .json({ success: false, error: 'Internal Server Error' });
   }
 });
 
@@ -172,20 +185,38 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
 router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
   try {
     const userId = req.user._id;
+    const { page = 1, limit = 20 } = req.query;
+
+    // Validate pagination parameters
+    const parsedPage = Math.max(1, Number.parseInt(page));
+    const parsedLimit = Math.min(100, Math.max(1, Number.parseInt(limit))); // Cap at 100 items
 
     const user = await UserModel.findById(userId)
       .populate({
         path: 'likedImages',
-        select: '_id name imageLink description price category createdAt userId',
+        select:
+          '_id name imageLink description price category createdAt userId',
         populate: { path: 'userId', select: 'name' },
+        options: {
+          skip: (parsedPage - 1) * parsedLimit,
+          limit: parsedLimit,
+          sort: { createdAt: -1 }, // Newest first
+        },
       })
       .select('likedImages');
 
     if (!user) {
-      return res.status(404).json({ success: false, error: 'User not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+      });
     }
 
-    const formattedImages = user.likedImages.map(image => ({
+    const totalCount = await UserModel.findById(userId).then(
+      (user) => user?.likedImages?.length || 0
+    );
+
+    const formattedImages = user.likedImages.map((image) => ({
       _id: image._id,
       name: image.name,
       imageLink: image.imageLink,
@@ -193,15 +224,29 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
       price: image.price,
       category: image.category,
       createdAt: image.createdAt,
-      artist: { name: image.userId?.name || 'Unknown Artist' }
+      artist: { name: image.userId?.name || 'Unknown Artist' },
+      isLiked: true,
     }));
 
-    console.log('Fetched user with likedImages:', user);
+    // console.log('Fetched user with likedImages:', user);
     console.log('Formatted liked images:', formattedImages);
 
     res.status(200).json({
       success: true,
-      images: formattedImages,
+      data: {
+        images: formattedImages,
+        pagination: {
+          total: totalCount,
+          page: parsedPage,
+          limit: parsedLimit,
+          totalPages: Math.ceil(totalCount / parsedLimit),
+          hasMore: parsedPage * parsedLimit < totalCount,
+        },
+        summary: {
+          totalLikedImages: totalCount,
+          categories: getCategoryCounts(user.likedImages), // Helper function
+        },
+      },
     });
   } catch (error) {
     console.error('Error fetching liked images:', error);
@@ -217,7 +262,8 @@ router.get('/images/bought', isUserAuthorized, async (req, res) => {
     const user = await UserModel.findById(userId)
       .populate({
         path: 'boughtImages',
-        select: '_id name imageLink description price category createdAt userId',
+        select:
+          '_id name imageLink description price category createdAt userId',
         populate: { path: 'userId', select: 'name' },
       })
       .select('boughtImages');
@@ -226,7 +272,7 @@ router.get('/images/bought', isUserAuthorized, async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    const formattedImages = user.boughtImages.map(image => ({
+    const formattedImages = user.boughtImages.map((image) => ({
       _id: image._id,
       name: image.name,
       imageLink: image.imageLink,
@@ -396,7 +442,8 @@ router.get('/images', isUserAuthorized, async (request, response) => {
     const userId = request.user._id; // Fix: Use _id instead of id
     const { stage } = request.query;
 
-    const query = { userId: userId };
+    const query = { userId };
+
     if (stage) {
       if (!Object.values(IMAGE_STAGE).includes(stage)) {
         return response.status(400).json({
@@ -407,13 +454,22 @@ router.get('/images', isUserAuthorized, async (request, response) => {
       query.stage = stage;
     }
 
-    const images = await ImageModel.find(query).select('_id name imageLink description price category createdAt stage userId');
-    console.log('Query for images:', query);
-    console.log('Fetched images:', images);
-    response.status(200).json({ success: true, images });
+    const images = await ImageModel.find(query).select(
+      '_id name imageLink description price category createdAt stage userId'
+    );
+
+    const imagesByStage = await getUserImagesGroupedByStage(images);
+
+    response.status(200).json({
+      success: true,
+      message: 'fetched liked images succesfully',
+      images: imagesByStage,
+    });
   } catch (error) {
     console.error('Error fetching images:', error);
-    response.status(500).json({ success: false, error: 'Internal Server Error' });
+    response
+      .status(500)
+      .json({ success: false, error: 'Internal Server Error' });
   }
 });
 
@@ -568,7 +624,9 @@ router.post('/image/:imageId/buy', isUserAuthorized, async (req, res) => {
     const userId = req.user._id; // Buyer
 
     if (!mongoose.Types.ObjectId.isValid(imageId)) {
-      return res.status(400).json({ success: false, error: 'Invalid image ID' });
+      return res
+        .status(400)
+        .json({ success: false, error: 'Invalid image ID' });
     }
 
     const image = await ImageModel.findById(imageId);
@@ -577,7 +635,9 @@ router.post('/image/:imageId/buy', isUserAuthorized, async (req, res) => {
     }
 
     if (image.stage === IMAGE_STAGE.SOLD) {
-      return res.status(400).json({ success: false, error: 'Image is already sold' });
+      return res
+        .status(400)
+        .json({ success: false, error: 'Image is already sold' });
     }
 
     image.stage = IMAGE_STAGE.SOLD;
@@ -646,7 +706,9 @@ router.post('/image/:id/like', isUserAuthorized, async (req, res) => {
     const user = await UserModel.findById(userId).select('likedImages');
 
     if (!image || !user) {
-      return res.status(404).json({ success: false, error: 'Image or user not found' });
+      return res
+        .status(404)
+        .json({ success: false, error: 'Image or user not found' });
     }
 
     let hasLiked = image.likes.includes(userId);
@@ -661,7 +723,10 @@ router.post('/image/:id/like', isUserAuthorized, async (req, res) => {
         { $pull: { likedImages: imageId } }
       );
       if (imageUpdate.modifiedCount === 0 || userUpdate.modifiedCount === 0) {
-        console.error('Failed to update likes/likedImages:', { imageId, userId });
+        console.error('Failed to update likes/likedImages:', {
+          imageId,
+          userId,
+        });
       }
     } else {
       const imageUpdate = await ImageModel.updateOne(
@@ -673,7 +738,10 @@ router.post('/image/:id/like', isUserAuthorized, async (req, res) => {
         { $addToSet: { likedImages: imageId } }
       );
       if (imageUpdate.modifiedCount === 0 || userUpdate.modifiedCount === 0) {
-        console.error('Failed to update likes/likedImages:', { imageId, userId });
+        console.error('Failed to update likes/likedImages:', {
+          imageId,
+          userId,
+        });
       }
     }
 
@@ -718,7 +786,7 @@ router.get('/image/:id/likes', isUserAuthorized, async (request, response) => {
 });
 
 // Route to review and update the stage of an image
-router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
+router.patch('/image/:id/review', isUserAuthorized, async (req, res) => {
   try {
     const { id } = req.params;
     const { stage } = req.body;
@@ -727,7 +795,7 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
     if (!Object.values(IMAGE_STAGE).includes(stage)) {
       return res.status(400).json({
         success: false,
-        error: "Invalid stage. Allowed values: review, approved, rejected",
+        error: 'Invalid stage. Allowed values: review, approved, rejected',
       });
     }
 
@@ -738,17 +806,21 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
     );
 
     if (!updatedImage) {
-      return res.status(404).json({ success: false, error: "Image not found" });
+      return res.status(404).json({ success: false, error: 'Image not found' });
     }
 
     return res.status(200).json({
       success: true,
-      message: `Image ${stage === "approved" ? "approved" : "rejected"} successfully`,
+      message: `Image ${
+        stage === 'approved' ? 'approved' : 'rejected'
+      } successfully`,
       image: updatedImage,
     });
   } catch (error) {
-    console.error("Error updating image stage:", error);
-    return res.status(500).json({ success: false, error: "Internal Server Error" });
+    console.error('Error updating image stage:', error);
+    return res
+      .status(500)
+      .json({ success: false, error: 'Internal Server Error' });
   }
 });
 
@@ -758,10 +830,15 @@ router.get('/user/total-likes', isUserAuthorized, async (req, res) => {
     const userId = req.user._id;
 
     // Find all images uploaded by the user
-    const userImages = await ImageModel.find({ userId: userId }).select('likes');
+    const userImages = await ImageModel.find({ userId: userId }).select(
+      'likes'
+    );
 
     // Calculate the total number of likes
-    const totalLikes = userImages.reduce((sum, image) => sum + (image.likes?.length || 0), 0);
+    const totalLikes = userImages.reduce(
+      (sum, image) => sum + (image.likes?.length || 0),
+      0
+    );
 
     res.status(200).json({
       success: true,

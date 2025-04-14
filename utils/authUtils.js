@@ -29,11 +29,9 @@ export const generateAuthToken = (_id) => {
 
 // ✅ Function to generate a JWT token for an admin user
 export const generateAdminAuthToken = (admin, expiresIn) => {
-  return jwt.sign(
-    { id: admin.id, role: admin.role }, 
-    JWT_SECRET,
-    { expiresIn: expiresIn }
-  );
+  return jwt.sign({ id: admin.id, role: admin.role }, JWT_SECRET, {
+    expiresIn: expiresIn,
+  });
 };
 
 // ✅ Function to set authentication cookies in the res
@@ -48,20 +46,27 @@ export const setAuthCookies = (res, value) => {
 
 // ✅ Function to get authentication token from request header
 export const getAuthToken = (headers) => {
-  const authHeader = headers['authorization'] || headers['Authorization'];
+  const authHeader = headers.authorization || headers.Authorization;
 
   // if header is invalid/ misses token
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Authorization header missing or invalid' });
+    return null;
   }
 
   return authHeader.split(' ')[1];
-}
+};
 
 // ✅ Middleware to check if the user is authorized (Regular Users)
 export const isUserAuthorized = async (req, res, next) => {
   // get token from request header
   const token = getAuthToken(req.headers);
+
+  if (!token) {
+    return res.status(403).json({
+      success: false,
+      message: 'Token verification error. Provide token',
+    });
+  }
 
   try {
     const data = jwt.verify(token, JWT_SECRET);
@@ -92,20 +97,19 @@ export const isAdminAuthorized = async (req, res, next) => {
       const data = jwt.verify(token, JWT_SECRET);
 
       if (typeof data !== 'string') {
-        const admin = await AdminUserModel.findById(data.id).catch(
-          (error) => {
-            console.error('Error finding admin:', error);
-            return null;
-          }
-        );
+        const admin = await AdminUserModel.findById(data.id).catch((error) => {
+          console.error('Error finding admin:', error);
+          return null;
+        });
 
         if (admin) {
           req.admin = admin;
           req.token = token;
           return next();
-        }
-        else {
-          return res.status(404).json({ success: false, error: 'Admin user not found' });
+        } else {
+          return res
+            .status(404)
+            .json({ success: false, error: 'Admin user not found' });
         }
       }
     } catch (error) {
