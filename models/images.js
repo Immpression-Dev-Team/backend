@@ -104,6 +104,10 @@ const ImageSchema = new Schema(
     },
     reviewedByEmail: { type: String }, // ✅ Stores the email of the reviewer
     reviewedAt: { type: Date }, // ✅ Stores the timestamp of approval/rejection
+    rejectionMessage: {
+      type: String,
+      default: "",
+    },    
   },
   { timestamps: true }
 );
