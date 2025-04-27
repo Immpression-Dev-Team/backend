@@ -886,5 +886,27 @@ router.post('/google-login', async (request, response) => {
   }
 });
 
+// Get public profile for any user by ID
+router.get('/profile/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = await UserModel.findById(id, ['name', 'email', 'views', 'bio', 'artistType', 'profilePictureLink']);
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    res.status(200).json({
+      success: true,
+      user,
+    });
+  } catch (error) {
+    console.error('Error fetching user profile by ID:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+
 // Export the router
 export default router;
