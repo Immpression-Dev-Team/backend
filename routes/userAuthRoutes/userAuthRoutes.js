@@ -75,9 +75,8 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
     }
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
-
     const saltRounds = 10;
-    const hashedOtp = await hash(otp, saltRounds);
+    const hashedOtp = await bcrypt.hash(otp, saltRounds);
 
     await OTP.findOneAndUpdate(
       { email },
@@ -85,12 +84,13 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
       { upsert: true }
     );
 
-    // send email
     const html = generateOtpEmailTemplate(otp, email);
     await sendEmail(email, 'Registration OTP', html);
 
     if (!existingUser) {
-      await UserModel.create({ email, password });
+      // Hash the password before saving the user
+      const hashedPassword = await bcrypt.hash(password, saltRounds);
+      await UserModel.create({ email, password: hashedPassword });
     }
 
     return response.status(200).json({
@@ -99,7 +99,6 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
     });
   } catch (error) {
     console.log('OTP request failed', error);
-
     return response.status(500).json({
       success: false,
       message: 'OTP request failed',
@@ -819,6 +818,13 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
         });
       }
 
+      if (user.isGoogleUser) {
+        return res.status(400).json({
+          success: false,
+          error: 'Google login users cannot update passwords this way. Please use Google login or reset your password.',
+        });
+      }
+
       if (!user.password) {
         return res.status(400).json({
           success: false,
@@ -826,7 +832,13 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
         });
       }
 
+      // Log the values for debugging
+      console.log('Current password provided:', currentPassword);
+      console.log('Stored password hash:', user.password);
+
       const isPasswordCorrect = await bcrypt.compare(currentPassword, user.password);
+      console.log('Password comparison result:', isPasswordCorrect);
+
       if (!isPasswordCorrect) {
         return res.status(401).json({
           success: false,
@@ -849,7 +861,7 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
 
       const salt = await bcrypt.genSalt(10);
       user.password = await bcrypt.hash(newPassword, salt);
-      user.passwordChangedAt = new Date(); // Set the password change timestamp
+      user.passwordChangedAt = new Date();
 
       user.markModified('password');
     }
@@ -859,7 +871,6 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
     const updatedUser = await UserModel.findById(userId).select('+password');
     console.log('Updated user password hash:', updatedUser.password);
 
-    // Clear the auth-token cookie
     res.clearCookie('auth-token', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
