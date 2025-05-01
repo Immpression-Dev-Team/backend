@@ -324,34 +324,29 @@ router.patch(
 );
 
 // Route to delete an image by id
+// Route to delete an image by id
 router.delete('/image/:id', isUserAuthorized, async (request, response) => {
   try {
-    // Getting the userId from the authenticated user
-    const userId = request.user.id;
-    // Getting the imageId from the request parameters
+    const userId = request.user._id; // Use _id instead of id
     const imageId = request.params.id;
 
-    // If userId is not provided, sending a 401 response
     if (!userId) {
       return response
         .status(401)
         .json({ success: false, error: 'User not authorized' });
     }
 
-    // If imageId is not provided, sending a 400 response
     if (!imageId) {
       return response
         .status(400)
         .json({ success: false, error: 'Image ID is required' });
     }
 
-    // Finding and deleting the image document in the database
     const deletedImage = await ImageModel.findOneAndDelete({
       _id: imageId,
       userId: userId,
     });
 
-    // If the image is not found, sending a 404 response
     if (!deletedImage) {
       return response.status(404).json({
         success: false,
@@ -359,14 +354,11 @@ router.delete('/image/:id', isUserAuthorized, async (request, response) => {
       });
     }
 
-    // Sending a success response indicating the image was deleted
     response
       .status(200)
       .json({ success: true, message: 'Image deleted successfully' });
   } catch (error) {
-    // Logging the error to the console
     console.error('Error deleting image:', error);
-    // Sending an internal server error response to the client
     response
       .status(500)
       .json({ success: false, error: 'Internal Server Error' });
@@ -376,21 +368,26 @@ router.delete('/image/:id', isUserAuthorized, async (request, response) => {
 // Route to get all images for the authenticated user
 router.get('/images', isUserAuthorized, async (request, response) => {
   try {
-    // Getting the userId from the authenticated user
-    const userId = request.user.id;
+    const userId = request.user._id; // Use _id instead of id
+    const { stage } = request.query;
 
-    // Finding all image documents for the user in the database
-    const images = await ImageModel.find({ userId: userId });
+    const query = { userId };
+    if (stage) {
+      if (!Object.values(IMAGE_STAGE).includes(stage)) {
+        return response.status(400).json({
+          success: false,
+          error: 'Invalid stage. Allowed values: review, approved, sold',
+        });
+      }
+      query.stage = stage;
+    }
 
-    // Sending a success response with the images data
+    const images = await ImageModel.find(query).select('_id name imageLink stage');
+
     response.status(200).json({ success: true, images });
   } catch (error) {
-    // Logging the error to the console
     console.error('Error fetching images:', error);
-    // Sending an internal server error response to the client
-    response
-      .status(500)
-      .json({ success: false, error: 'Internal Server Error' });
+    response.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
 

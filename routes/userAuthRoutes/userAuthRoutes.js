@@ -800,34 +800,83 @@ router.delete('/delete-account', isUserAuthorized, async (req, res) => {
 router.put('/update-profile', isUserAuthorized, async (req, res) => {
   try {
     const userId = req.user._id;
-    const { name, email, password } = req.body;
+    const { name, email, currentPassword, newPassword } = req.body;
 
-    // Find the user by ID
-    const user = await UserModel.findById(userId);
+    const user = await UserModel.findById(userId).select('+password');
 
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    // Update fields if provided
     if (name) user.name = name;
     if (email) user.email = email;
 
-    // If password is provided, hash it before saving
-    if (password) {
+    if (newPassword) {
+      if (!currentPassword) {
+        return res.status(400).json({
+          success: false,
+          error: 'Current password is required to update the password.',
+        });
+      }
+
+      if (!user.password) {
+        return res.status(400).json({
+          success: false,
+          error: 'No existing password found. This account may use Google login.',
+        });
+      }
+
+      const isPasswordCorrect = await bcrypt.compare(currentPassword, user.password);
+      if (!isPasswordCorrect) {
+        return res.status(401).json({
+          success: false,
+          error: 'Incorrect current password.',
+        });
+      }
+
+      if (newPassword.length < 8) {
+        return res.status(400).json({
+          success: false,
+          error: 'New password must be at least 8 characters long.',
+        });
+      }
+      if (newPassword.length > 30) {
+        return res.status(400).json({
+          success: false,
+          error: 'New password must be less than 30 characters.',
+        });
+      }
+
       const salt = await bcrypt.genSalt(10);
-      user.password = await bcrypt.hash(password, salt);
+      user.password = await bcrypt.hash(newPassword, salt);
+      user.passwordChangedAt = new Date(); // Set the password change timestamp
+
+      user.markModified('password');
     }
 
-    // Save the updated user profile
     await user.save();
+
+    const updatedUser = await UserModel.findById(userId).select('+password');
+    console.log('Updated user password hash:', updatedUser.password);
+
+    // Clear the auth-token cookie
+    res.clearCookie('auth-token', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+    });
 
     res.status(200).json({
       success: true,
-      message: 'Profile updated successfully',
+      message: 'Profile updated successfully. You have been logged out. Please log in with your new password.',
       user: { name: user.name, email: user.email },
     });
   } catch (error) {
+    if (error instanceof mongoose.Error.ValidationError) {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({ success: false, error: messages.join(', ') });
+    }
+
     console.error('Error updating profile:', error);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
