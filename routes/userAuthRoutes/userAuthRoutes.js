@@ -891,7 +891,15 @@ router.get('/profile/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const user = await UserModel.findById(id, ['name', 'email', 'views', 'bio', 'artistType', 'profilePictureLink']);
+    const user = await UserModel.findById(id, [
+      'name',
+      'email',
+      'views',
+      'bio',
+      'artistType',
+      'profilePictureLink',
+      'likedImages',
+    ]);
 
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
@@ -906,7 +914,6 @@ router.get('/profile/:id', async (req, res) => {
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
-
 
 // Export the router
 export default router;
