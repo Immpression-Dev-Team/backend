@@ -20,6 +20,7 @@ import {
   generateAuthToken,
   otpRateLimiter,
   isValidEmail,
+  validatePassword,
 } from '../../utils/authUtils.js';
 
 import { isUserAuthorized } from '../../utils/authUtils.js';
@@ -795,11 +796,18 @@ router.delete('/delete-account', isUserAuthorized, async (req, res) => {
   }
 });
 
-// Route to update user profile fields (name, email, password)
+// Route to update user profile fields ( password)
 router.put('/update-profile', isUserAuthorized, async (req, res) => {
   try {
     const userId = req.user._id;
-    const { name, email, currentPassword, newPassword } = req.body;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Current password and new password are required',
+      });
+    }
 
     const user = await UserModel.findById(userId).select('+password');
 
@@ -821,14 +829,16 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
       if (user.isGoogleUser) {
         return res.status(400).json({
           success: false,
-          error: 'Google login users cannot update passwords this way. Please use Google login or reset your password.',
+          error:
+            'Google login users cannot update passwords this way. Please use Google login or reset your password.',
         });
       }
 
       if (!user.password) {
         return res.status(400).json({
           success: false,
-          error: 'No existing password found. This account may use Google login.',
+          error:
+            'No existing password found. This account may use Google login.',
         });
       }
 
@@ -836,7 +846,10 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
       console.log('Current password provided:', currentPassword);
       console.log('Stored password hash:', user.password);
 
-      const isPasswordCorrect = await bcrypt.compare(currentPassword, user.password);
+      const isPasswordCorrect = await bcrypt.compare(
+        currentPassword,
+        user.password
+      );
       console.log('Password comparison result:', isPasswordCorrect);
 
       if (!isPasswordCorrect) {
@@ -879,16 +892,130 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Profile updated successfully. You have been logged out. Please log in with your new password.',
+      message:
+        'Profile updated successfully. You have been logged out. Please log in with your new password.',
       user: { name: user.name, email: user.email },
     });
   } catch (error) {
     if (error instanceof mongoose.Error.ValidationError) {
-      const messages = Object.values(error.errors).map(err => err.message);
-      return res.status(400).json({ success: false, error: messages.join(', ') });
+      const messages = Object.values(error.errors).map((err) => err.message);
+      return res
+        .status(400)
+        .json({ success: false, error: messages.join(', ') });
     }
 
     console.error('Error updating profile:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+router.patch('/update-password', isUserAuthorized, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Current password and new password are required',
+      });
+    }
+
+    const user = await UserModel.findById(userId).select('+password');
+
+    if (user.isGoogleUser) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'Google login users cannot update passwords this way. Please use Google login or reset your password.',
+      });
+    }
+
+    const isPasswordCorrect = await bcrypt.compare(
+      currentPassword,
+      user.password
+    );
+
+    if (!isPasswordCorrect) {
+      return res.status(401).json({
+        success: false,
+        error: 'Incorrect current password.',
+      });
+    }
+
+    const passwordValidation = validatePassword(newPassword);
+    if (!passwordValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: passwordValidation.message,
+      });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(newPassword, salt);
+    await user.save();
+
+    res.clearCookie('auth-token', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+    });
+
+    return res.status(200).json({
+      success: true,
+      message:
+        'Password updated successfully. Please log in with your new password.',
+    });
+  } catch (error) {
+    console.error('Error updating password:', error);
+    return res
+      .status(500)
+      .json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email is required',
+      });
+    }
+
+    const user = await UserModel.findOne({ email });
+
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message:
+          'If an account with that email exists, a password reset link has been sent',
+      });
+    }
+
+    // Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpires = Date.now() + 3600000; // 1 hour from now
+
+    user.resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+    user.resetPasswordExpires = resetTokenExpires;
+    await user.save();
+
+    // Send reset token to user email.
+
+    return res.status(200).json({
+      success: true,
+      message:
+        'If an account with that email exists, a password reset token has been sent',
+    });
+  } catch (error) {
+    console.error('Error verifying password reset:', error);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -951,7 +1078,14 @@ router.get('/profile/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const user = await UserModel.findById(id, ['name', 'email', 'views', 'bio', 'artistType', 'profilePictureLink']);
+    const user = await UserModel.findById(id, [
+      'name',
+      'email',
+      'views',
+      'bio',
+      'artistType',
+      'profilePictureLink',
+    ]);
 
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
@@ -966,7 +1100,6 @@ router.get('/profile/:id', async (req, res) => {
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
-
 
 // Export the router
 export default router;

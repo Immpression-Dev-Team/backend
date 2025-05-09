@@ -1,5 +1,4 @@
 import mongoose from 'mongoose';
-import bcrypt from 'bcrypt';
 
 const { Schema } = mongoose;
 
@@ -25,7 +24,6 @@ const UserSchema = new Schema(
       required: false,
       select: false,
       minLength: [8, 'Password should be at least 8 characters'], // Align with route
-      maxLength: [30, 'Password should be less than 30 characters'],
     },
     passwordChangedAt: {
       type: Date,
@@ -65,7 +63,7 @@ const UserSchema = new Schema(
     },
     isGoogleUser: {
       type: Boolean,
-      default: true,
+      default: false,
     },
     isVerified: {
       type: Boolean,
@@ -77,6 +75,14 @@ const UserSchema = new Schema(
         ref: 'Image',
       },
     ],
+    resetPasswordToken: {
+      type: String,
+      select: false,
+    },
+    resetPasswordExpires: {
+      type: Date,
+      select: false,
+    },
   },
   {
     timestamps: true,

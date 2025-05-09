@@ -19,7 +19,9 @@ export const generateAuthToken = (_id) => {
 };
 
 export const generateAdminAuthToken = (admin, expiresIn) => {
-  return jwt.sign({ id: admin.id, role: admin.role }, JWT_SECRET, { expiresIn });
+  return jwt.sign({ id: admin.id, role: admin.role }, JWT_SECRET, {
+    expiresIn,
+  });
 };
 
 export const setAuthCookies = (res, value) => {
@@ -46,19 +48,26 @@ export const isUserAuthorized = async (req, res, next) => {
   const token = getAuthToken(req.headers);
 
   if (!token) {
-    return res.status(401).json({ success: false, error: 'Authorization header missing or invalid' });
+    return res.status(401).json({
+      success: false,
+      error: 'Authorization header missing or invalid',
+    });
   }
 
   try {
     const data = jwt.verify(token, JWT_SECRET);
     if (typeof data !== 'string') {
-      const user = await UserModel.findById(data._id).select('+passwordChangedAt').catch((error) => {
-        console.error('Error finding user:', error);
-        return null;
-      });
+      const user = await UserModel.findById(data._id)
+        .select('+passwordChangedAt')
+        .catch((error) => {
+          console.error('Error finding user:', error);
+          return null;
+        });
 
       if (!user) {
-        return res.status(401).json({ success: false, error: 'User not found' });
+        return res
+          .status(401)
+          .json({ success: false, error: 'User not found' });
       }
 
       // Check if the password was changed after the token was issued
@@ -74,10 +83,14 @@ export const isUserAuthorized = async (req, res, next) => {
       req.token = token;
       return next();
     }
-    return res.status(401).json({ success: false, error: 'Invalid token payload' });
+    return res
+      .status(401)
+      .json({ success: false, error: 'Invalid token payload' });
   } catch (error) {
     console.error('Token verification error:', error);
-    return res.status(401).json({ success: false, error: 'Invalid or expired token' });
+    return res
+      .status(401)
+      .json({ success: false, error: 'Invalid or expired token' });
   }
 };
 
@@ -85,7 +98,10 @@ export const isAdminAuthorized = async (req, res, next) => {
   const token = getAuthToken(req.headers);
 
   if (!token) {
-    return res.status(401).json({ success: false, error: 'Authorization header missing or invalid' });
+    return res.status(401).json({
+      success: false,
+      error: 'Authorization header missing or invalid',
+    });
   }
 
   try {
@@ -101,18 +117,26 @@ export const isAdminAuthorized = async (req, res, next) => {
         req.token = token;
         return next();
       }
-      return res.status(404).json({ success: false, error: 'Admin user not found' });
+      return res
+        .status(404)
+        .json({ success: false, error: 'Admin user not found' });
     }
-    return res.status(401).json({ success: false, error: 'Invalid token payload' });
+    return res
+      .status(401)
+      .json({ success: false, error: 'Invalid token payload' });
   } catch (error) {
     console.error('Admin Token verification error:', error);
-    return res.status(401).json({ success: false, error: 'Invalid or expired token' });
+    return res
+      .status(401)
+      .json({ success: false, error: 'Invalid or expired token' });
   }
 };
 
 export const validatePrice = (price) => {
-  const price_val = parseFloat(price);
-  return isNaN(price_val) || !isFinite(price_val) ? null : price_val;
+  const price_val = Number.parseFloat(price);
+  return Number.isNaN(price_val) || !Number.isFinite(price_val)
+    ? null
+    : price_val;
 };
 
 export const validateImageLink = (imageLink) => {
@@ -136,3 +160,28 @@ export const otpRateLimiter = rateLimit({
     message: 'Too many OTP requests. Please try again after a minute.',
   },
 });
+
+export const validatePassword = (password) => {
+  if (password.length < 8 || password.length > 30) {
+    return {
+      valid: false,
+      message: 'Password must be between 8 and 30 characters',
+    };
+  }
+
+  // just in case we need to add more validation later..
+
+  // At least one uppercase, one lowercase, one number and one special character
+  // const passwordRegex =
+  //   /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,30}$/;
+
+  // if (!passwordRegex.test(password)) {
+  //   return {
+  //     valid: false,
+  //     message:
+  //       'Password must contain at least one uppercase letter, one lowercase letter, one number and one special character',
+  //   };
+  // }
+
+  return { valid: true };
+};
