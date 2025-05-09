@@ -65,7 +65,7 @@ const UserSchema = new Schema(
     },
     isGoogleUser: {
       type: Boolean,
-      default: true,
+      default: false,
     },
     isVerified: {
       type: Boolean,
