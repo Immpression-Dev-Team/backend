@@ -803,99 +803,88 @@ router.delete('/delete-account', isUserAuthorized, async (req, res) => {
   }
 });
 
-// Route to update user profile fields ( password)
-router.put('/update-profile', isUserAuthorized, async (req, res) => {
+// Route to update user profile fields
+router.patch('/update-profile', isUserAuthorized, async (req, res) => {
   try {
     const userId = req.user._id;
-    const { currentPassword, newPassword } = req.body;
+    const updates = req.body;
+    const allowedUpdates = [
+      'name',
+      'email',
+      'bio',
+      'artistType',
+      'accountType',
+      'artCategories',
+      'profilePictureLink',
+    ];
 
-    if (!currentPassword || !newPassword) {
+    const isValidOperation = Object.keys(updates).every((update) =>
+      allowedUpdates.includes(update)
+    );
+
+    if (!isValidOperation) {
       return res.status(400).json({
         success: false,
-        error: 'Current password and new password are required',
+        error:
+          'Invalid updates! Only name, email, bio, artistType, accountType, artCategories, and profilePictureLink can be updated',
       });
     }
 
-    const user = await UserModel.findById(userId).select('+password');
+    // Special handling for email update
+    if (updates.email) {
+      const emailRegex = /^\w+(\.\w+)*@\w+([\-]?\w+)*(\.\w{2,3})+$/;
+      if (!emailRegex.test(updates.email)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid email address format',
+        });
+      }
+
+      // Check if email already exists
+      const existingUser = await UserModel.findOne({ email: updates.email });
+      if (existingUser && existingUser._id.toString() !== userId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Email already in use by another account',
+        });
+      }
+    }
+
+    // Special handling for name update
+    if (updates.name) {
+      if (updates.name.length < 4 || updates.name.length > 30) {
+        return res.status(400).json({
+          success: false,
+          error: 'Name must be between 4 and 30 characters',
+        });
+      }
+    }
+
+    // Special handling for bio update
+    if (updates.bio && updates.bio.length > 500) {
+      return res.status(400).json({
+        success: false,
+        error: 'Bio must be less than 500 characters',
+      });
+    }
+
+    // Find and update user
+    const user = await UserModel.findByIdAndUpdate(userId, updates, {
+      new: true,
+      runValidators: true,
+    }).select('-password -resetPasswordToken -resetPasswordExpires');
 
     if (!user) {
-      return res.status(404).json({ success: false, error: 'User not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+      });
     }
 
-    if (name) user.name = name;
-    if (email) user.email = email;
-
-    if (newPassword) {
-      if (!currentPassword) {
-        return res.status(400).json({
-          success: false,
-          error: 'Current password is required to update the password.',
-        });
-      }
-
-      const trimmedNewPassword = newPassword.trim(); // Trim whitespace
-
-      if (!user.password) {
-        return res.status(400).json({
-          success: false,
-          error:
-            'No existing password found. This account may use Google login.',
-        });
-      }
-
-      // Log the values for debugging
-      console.log('Current password provided:', currentPassword);
-      console.log('Stored password hash:', user.password);
-
-      const isPasswordCorrect = await bcrypt.compare(
-        currentPassword,
-        user.password
-      );
-      console.log('Password comparison result:', isPasswordCorrect);
-
-      if (!isPasswordCorrect) {
-        return res.status(401).json({
-          success: false,
-          error: 'Incorrect current password.',
-        });
-      }
-
-      if (newPassword.length < 8) {
-        return res.status(400).json({
-          success: false,
-          error: 'New password must be at least 8 characters long.',
-        });
-      }
-      if (newPassword.length > 30) {
-        return res.status(400).json({
-          success: false,
-          error: 'New password must be less than 30 characters.',
-        });
-      }
-
-      const salt = await bcrypt.genSalt(10);
-      user.password = await bcrypt.hash(trimmedNewPassword, salt);
-      user.passwordChangedAt = new Date();
-
-      user.markModified('password');
-    }
-
-    await user.save();
-
-    const updatedUser = await UserModel.findById(userId).select('+password');
-    console.log('Updated user password hash:', updatedUser.password);
-
-    res.clearCookie('auth-token', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-    });
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message:
-        'Profile updated successfully. You have been logged out. Please log in with your new password.',
-      user: { name: user.name, email: user.email },
+      message: 'Profile updated successfully',
+      user,
     });
   } catch (error) {
     if (error instanceof mongoose.Error.ValidationError) {
