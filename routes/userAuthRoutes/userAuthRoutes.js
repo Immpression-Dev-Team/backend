@@ -89,9 +89,12 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
     await sendEmail(email, 'Registration OTP', html);
 
     if (!existingUser) {
-      // Hash the password before saving the user
       const hashedPassword = await bcrypt.hash(password, saltRounds);
-      await UserModel.create({ email, password: hashedPassword });
+      await UserModel.create({
+        email,
+        password: hashedPassword,
+        isGoogleUser: false, // Explicitly set to false for email/password users
+      });
     }
 
     return response.status(200).json({
@@ -275,10 +278,13 @@ router.post('/logout', (request, response) => {
 // Endpoint to get the user's profile
 router.get('/get-profile', isUserAuthorized, async (request, response) => {
   try {
-    const userId = request.user._id; // Get the authenticated user's ID
-
-    // Find the user by their ID, select the necessary fields
-    const user = await UserModel.findById(userId, ['name', 'email', 'views']);
+    const userId = request.user._id;
+    const user = await UserModel.findById(userId, [
+      'name',
+      'email',
+      'views',
+      'isGoogleUser',
+    ]); // Add isGoogleUser
 
     if (!user) {
       return response.status(404).json({
@@ -293,6 +299,7 @@ router.get('/get-profile', isUserAuthorized, async (request, response) => {
         name: user.name,
         email: user.email,
         views: user.views,
+        isGoogleUser: user.isGoogleUser, // Include in response
       },
     });
   } catch (error) {
@@ -826,13 +833,15 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
         });
       }
 
-      if (user.isGoogleUser) {
-        return res.status(400).json({
-          success: false,
-          error:
+      const trimmedNewPassword = newPassword.trim(); // Trim whitespace
+
+//      if (user.isGoogleUser) {
+//        return res.status(400).json({
+//          success: false,
+//          error:
             'Google login users cannot update passwords this way. Please use Google login or reset your password.',
-        });
-      }
+//        });
+//      }
 
       if (!user.password) {
         return res.status(400).json({
@@ -873,7 +882,7 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
       }
 
       const salt = await bcrypt.genSalt(10);
-      user.password = await bcrypt.hash(newPassword, salt);
+      user.password = await bcrypt.hash(trimmedNewPassword, salt);
       user.passwordChangedAt = new Date();
 
       user.markModified('password');
