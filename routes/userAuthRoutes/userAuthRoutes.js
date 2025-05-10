@@ -835,14 +835,6 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
 
       const trimmedNewPassword = newPassword.trim(); // Trim whitespace
 
-//      if (user.isGoogleUser) {
-//        return res.status(400).json({
-//          success: false,
-//          error:
-            'Google login users cannot update passwords this way. Please use Google login or reset your password.',
-//        });
-//      }
-
       if (!user.password) {
         return res.status(400).json({
           success: false,
