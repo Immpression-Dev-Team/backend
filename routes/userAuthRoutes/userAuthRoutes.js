@@ -804,7 +804,7 @@ router.delete('/delete-account', isUserAuthorized, async (req, res) => {
 });
 
 // Route to update user profile fields
-router.patch('/update-profile', isUserAuthorized, async (req, res) => {
+router.put('/update-profile', isUserAuthorized, async (req, res) => {
   try {
     const userId = req.user._id;
     const updates = req.body;
@@ -913,14 +913,6 @@ router.patch('/update-password', isUserAuthorized, async (req, res) => {
     }
 
     const user = await UserModel.findById(userId).select('+password');
-
-    if (user.isGoogleUser) {
-      return res.status(400).json({
-        success: false,
-        error:
-          'Google login users cannot update passwords this way. Please use Google login or reset your password.',
-      });
-    }
 
     const isPasswordCorrect = await bcrypt.compare(
       currentPassword,
