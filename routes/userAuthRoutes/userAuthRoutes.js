@@ -20,6 +20,7 @@ import {
   generateAuthToken,
   otpRateLimiter,
   isValidEmail,
+  validatePassword,
 } from '../../utils/authUtils.js';
 
 import { isUserAuthorized } from '../../utils/authUtils.js';
@@ -75,9 +76,8 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
     }
 
     const otp = Math.floor(1000 + Math.random() * 9000).toString();
-
     const saltRounds = 10;
-    const hashedOtp = await hash(otp, saltRounds);
+    const hashedOtp = await bcrypt.hash(otp, saltRounds);
 
     await OTP.findOneAndUpdate(
       { email },
@@ -85,12 +85,16 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
       { upsert: true }
     );
 
-    // send email
     const html = generateOtpEmailTemplate(otp, email);
     await sendEmail(email, 'Registration OTP', html);
 
     if (!existingUser) {
-      await UserModel.create({ email, password });
+      const hashedPassword = await bcrypt.hash(password, saltRounds);
+      await UserModel.create({
+        email,
+        password: hashedPassword,
+        isGoogleUser: false, // Explicitly set to false for email/password users
+      });
     }
 
     return response.status(200).json({
@@ -99,7 +103,6 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
     });
   } catch (error) {
     console.log('OTP request failed', error);
-
     return response.status(500).json({
       success: false,
       message: 'OTP request failed',
@@ -275,10 +278,13 @@ router.post('/logout', (request, response) => {
 // Endpoint to get the user's profile
 router.get('/get-profile', isUserAuthorized, async (request, response) => {
   try {
-    const userId = request.user._id; // Get the authenticated user's ID
-
-    // Find the user by their ID, select the necessary fields
-    const user = await UserModel.findById(userId, ['name', 'email', 'views']);
+    const userId = request.user._id;
+    const user = await UserModel.findById(userId, [
+      'name',
+      'email',
+      'views',
+      'isGoogleUser',
+    ]); // Add isGoogleUser
 
     if (!user) {
       return response.status(404).json({
@@ -293,6 +299,7 @@ router.get('/get-profile', isUserAuthorized, async (request, response) => {
         name: user.name,
         email: user.email,
         views: user.views,
+        isGoogleUser: user.isGoogleUser, // Include in response
       },
     });
   } catch (error) {
@@ -796,39 +803,201 @@ router.delete('/delete-account', isUserAuthorized, async (req, res) => {
   }
 });
 
-// Route to update user profile fields (name, email, password)
+// Route to update user profile fields
 router.put('/update-profile', isUserAuthorized, async (req, res) => {
   try {
     const userId = req.user._id;
-    const { name, email, password } = req.body;
+    const updates = req.body;
+    const allowedUpdates = [
+      'name',
+      'email',
+      'bio',
+      'artistType',
+      'accountType',
+      'artCategories',
+      'profilePictureLink',
+    ];
 
-    // Find the user by ID
-    const user = await UserModel.findById(userId);
+    const isValidOperation = Object.keys(updates).every((update) =>
+      allowedUpdates.includes(update)
+    );
+
+    if (!isValidOperation) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'Invalid updates! Only name, email, bio, artistType, accountType, artCategories, and profilePictureLink can be updated',
+      });
+    }
+
+    // Special handling for email update
+    if (updates.email) {
+      const emailRegex = /^\w+(\.\w+)*@\w+([\-]?\w+)*(\.\w{2,3})+$/;
+      if (!emailRegex.test(updates.email)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid email address format',
+        });
+      }
+
+      // Check if email already exists
+      const existingUser = await UserModel.findOne({ email: updates.email });
+      if (existingUser && existingUser._id.toString() !== userId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Email already in use by another account',
+        });
+      }
+    }
+
+    // Special handling for name update
+    if (updates.name) {
+      if (updates.name.length < 4 || updates.name.length > 30) {
+        return res.status(400).json({
+          success: false,
+          error: 'Name must be between 4 and 30 characters',
+        });
+      }
+    }
+
+    // Special handling for bio update
+    if (updates.bio && updates.bio.length > 500) {
+      return res.status(400).json({
+        success: false,
+        error: 'Bio must be less than 500 characters',
+      });
+    }
+
+    // Find and update user
+    const user = await UserModel.findByIdAndUpdate(userId, updates, {
+      new: true,
+      runValidators: true,
+    }).select('-password -resetPasswordToken -resetPasswordExpires');
 
     if (!user) {
-      return res.status(404).json({ success: false, error: 'User not found' });
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+      });
     }
 
-    // Update fields if provided
-    if (name) user.name = name;
-    if (email) user.email = email;
-
-    // If password is provided, hash it before saving
-    if (password) {
-      const salt = await bcrypt.genSalt(10);
-      user.password = await bcrypt.hash(password, salt);
-    }
-
-    // Save the updated user profile
-    await user.save();
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Profile updated successfully',
-      user: { name: user.name, email: user.email },
+      user,
     });
   } catch (error) {
+    if (error instanceof mongoose.Error.ValidationError) {
+      const messages = Object.values(error.errors).map((err) => err.message);
+      return res
+        .status(400)
+        .json({ success: false, error: messages.join(', ') });
+    }
+
     console.error('Error updating profile:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+router.patch('/update-password', isUserAuthorized, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Current password and new password are required',
+      });
+    }
+
+    const user = await UserModel.findById(userId).select('+password');
+
+    const isPasswordCorrect = await bcrypt.compare(
+      currentPassword,
+      user.password
+    );
+
+    if (!isPasswordCorrect) {
+      return res.status(401).json({
+        success: false,
+        error: 'Incorrect current password.',
+      });
+    }
+
+    const passwordValidation = validatePassword(newPassword);
+    if (!passwordValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: passwordValidation.message,
+      });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(newPassword, salt);
+    await user.save();
+
+    res.clearCookie('auth-token', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+    });
+
+    return res.status(200).json({
+      success: true,
+      message:
+        'Password updated successfully. Please log in with your new password.',
+    });
+  } catch (error) {
+    console.error('Error updating password:', error);
+    return res
+      .status(500)
+      .json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email is required',
+      });
+    }
+
+    const user = await UserModel.findOne({ email });
+
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message:
+          'If an account with that email exists, a password reset link has been sent',
+      });
+    }
+
+    // Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpires = Date.now() + 3600000; // 1 hour from now
+
+    user.resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+    user.resetPasswordExpires = resetTokenExpires;
+    await user.save();
+
+    // Send reset token to user email.
+
+    return res.status(200).json({
+      success: true,
+      message:
+        'If an account with that email exists, a password reset token has been sent',
+    });
+  } catch (error) {
+    console.error('Error verifying password reset:', error);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
@@ -891,7 +1060,14 @@ router.get('/profile/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const user = await UserModel.findById(id, ['name', 'email', 'views', 'bio', 'artistType', 'profilePictureLink']);
+    const user = await UserModel.findById(id, [
+      'name',
+      'email',
+      'views',
+      'bio',
+      'artistType',
+      'profilePictureLink',
+    ]);
 
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
@@ -906,7 +1082,6 @@ router.get('/profile/:id', async (req, res) => {
     res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
-
 
 // Export the router
 export default router;
