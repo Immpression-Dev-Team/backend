@@ -1,5 +1,6 @@
 import express from 'express';
 import OrderModel from '../../models/orders.js';
+import UserModel from '../../models/users.js';
 import { isUserAuthorized } from '../../utils/authUtils.js';
 
 import Stripe from 'stripe';
@@ -11,22 +12,36 @@ const router = express.Router();
 
 router.post('/order', isUserAuthorized, async (req, res) => {
   try {
-    const { artName, deliveryDetails } = req.body;
+    const { artName, artistName, price, imageLink, deliveryDetails } = req.body;
 
     // Validate input
-    if (!artName || !deliveryDetails) {
+    if (!artName || !artistName || !price || !deliveryDetails) {
       return res.status(400).json({
         success: false,
-        error: 'Art name and delivery details are required.',
+        error: 'Missing required order fields.',
+      });
+    }
+
+    // Lookup the artist by name (or however you're tracking artists)
+    const artist = await UserModel.findOne({ name: artistName });
+
+    if (!artist || !artist.stripeAccountId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Artist not found or not connected to Stripe.',
       });
     }
 
     // Create the order
     const newOrder = new OrderModel({
       artName,
-      userAccountName: req.user.name, // Extract account name from req.user
-      userId: req.user._id, // Extract user ID from req.user
+      artistName,
+      price,
+      artistStripeId: artist.stripeAccountId, // from UserModel
+      imageLink, // if you want to save image link
       deliveryDetails,
+      userAccountName: req.user.name,
+      userId: req.user._id,
     });
 
     await newOrder.save();
@@ -35,6 +50,7 @@ router.post('/order', isUserAuthorized, async (req, res) => {
       success: true,
       message: 'Order created successfully.',
       order: newOrder,
+      orderId: newOrder._id, // make sure frontend receives this
     });
   } catch (error) {
     console.error('Error creating order:', error);
@@ -45,29 +61,42 @@ router.post('/order', isUserAuthorized, async (req, res) => {
   }
 });
 
-router.post('/create-payment-intent', async (req, res) => {
-  try {
-    const { amount, currency } = req.body;
 
-    // Validate the input
-    if (!amount || !currency) {
-      return res
-        .status(400)
-        .json({ error: 'Amount and currency are required' });
+router.post('/create-payment-intent', isUserAuthorized, async (req, res) => {
+  try {
+    const { orderId } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({ error: 'Missing orderId' });
     }
 
-    // Create the PaymentIntent
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount, // Amount in the smallest currency unit (e.g., cents for USD)
-      currency,
-      payment_method_types: ['card'],
-    });
+    const order = await OrderModel.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
 
-    // Respond with the client secret
+    if (!order.price || !order.artistStripeId) {
+      return res.status(400).json({ error: 'Missing order price or artist Stripe account' });
+    }
+
+    const amountInCents = Math.round(order.price * 100); // Convert dollars to cents
+
+    const paymentIntent = await stripe.paymentIntents.create(
+      {
+        amount: amountInCents,
+        currency: 'usd',
+        payment_method_types: ['card'],
+        application_fee_amount: Math.round(amountInCents * 0.1), // 10% platform fee
+      },
+      {
+        stripeAccount: order.artistStripeId, // Connected Stripe account for the artist
+      }
+    );
+
     res.status(200).json({ clientSecret: paymentIntent.client_secret });
   } catch (error) {
-    console.error('Error creating PaymentIntent:', error);
-    res.status(500).json({ error: 'Server error Internal' });
+    console.error('Stripe error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 

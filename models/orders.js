@@ -9,10 +9,24 @@ const OrderSchema = new Schema(
       type: String,
       required: true,
     },
+    // Artist name (optional)
+    artistName: {
+      type: String,
+    },
+    // Artist's connected Stripe account ID (REQUIRED for Stripe Connect)
+    artistStripeId: {
+      type: String,
+      required: true,
+    },
+    // Price of the artwork in USD
+    price: {
+      type: Number,
+      required: true,
+    },
     // User account name
     userAccountName: {
       type: String,
-      required: true, // Make it required to ensure every order has this
+      required: true,
     },
     // Delivery details
     deliveryDetails: {
@@ -21,6 +35,7 @@ const OrderSchema = new Schema(
       city: { type: String, required: true },
       state: { type: String, required: true },
       zipCode: { type: String, required: true },
+      country: { type: String, required: true },
     },
     // Reference to user
     userId: {
