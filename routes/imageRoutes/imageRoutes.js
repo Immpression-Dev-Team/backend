@@ -167,7 +167,7 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
       .limit(limit)
       .skip(skip)
       .select(
-        '_id userId artistName name description price imageLink views category createdAt stage'
+        '_id userId artistName name description price imageLink views category createdAt stage likes'
       );
 
     if (images.length === 0 && page > 1) {

@@ -281,8 +281,6 @@ router.get('/get-profile', isUserAuthorized, async (request, response) => {
     const userId = request.user._id;
     const user = await UserModel.findById(userId).populate('images'); // Add isGoogleUser
 
-    console.log(user);
-
     if (!user) {
       return response.status(404).json({
         success: false,
@@ -1071,8 +1069,6 @@ router.get('/profile/:id', async (req, res) => {
     const totalLikes = user.images.reduce((sum, image) => {
       return sum + (image.likes ? image.likes.length : 0);
     }, 0);
-
-    console.log(user);
 
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
