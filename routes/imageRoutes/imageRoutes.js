@@ -412,9 +412,10 @@ router.get('/images', isUserAuthorized, async (request, response) => {
       query.stage = stage;
     }
 
-    const images = await ImageModel.find(query).select(
-      '_id name imageLink stage'
-    );
+    const images = await ImageModel.find(query);
+    // .select(
+    //   '_id name imageLink stage'
+    // );
 
     response.status(200).json({ success: true, images });
   } catch (error) {
