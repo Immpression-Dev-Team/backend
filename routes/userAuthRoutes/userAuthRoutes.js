@@ -279,12 +279,7 @@ router.post('/logout', (request, response) => {
 router.get('/get-profile', isUserAuthorized, async (request, response) => {
   try {
     const userId = request.user._id;
-    const user = await UserModel.findById(userId, [
-      'name',
-      'email',
-      'views',
-      'isGoogleUser',
-    ]); // Add isGoogleUser
+    const user = await UserModel.findById(userId).populate('images'); // Add isGoogleUser
 
     if (!user) {
       return response.status(404).json({
@@ -293,13 +288,23 @@ router.get('/get-profile', isUserAuthorized, async (request, response) => {
       });
     }
 
+    const totalLikes = user.images.reduce((sum, image) => {
+      return sum + (image.likes ? image.likes.length : 0);
+    }, 0);
+
     response.status(200).json({
       success: true,
       user: {
         name: user.name,
         email: user.email,
         views: user.views,
-        isGoogleUser: user.isGoogleUser, // Include in response
+        isGoogleUser: user.isGoogleUser,
+        totalLikes: totalLikes,
+        profilePicture: user.profilePictureLink,
+        bio: user.bio,
+        artistType: user.artistType,
+        accountType: user.accountType,
+        likedImages: user.likedImages,
       },
     });
   } catch (error) {
@@ -394,7 +399,6 @@ router.post('/profile-picture', async (request, response) => {
 router.get('/profile-picture/:userId', async (request, response) => {
   try {
     const { userId } = request.params;
-    console.log(`Received request for profile picture of userId: ${userId}`);
 
     const user = await UserModel.findById(userId);
 
@@ -411,10 +415,6 @@ router.get('/profile-picture/:userId', async (request, response) => {
         .status(404)
         .json({ success: false, error: 'Profile picture not found' });
     }
-
-    console.log(
-      `Returning profile picture for user ${userId}: ${user.profilePictureLink}`
-    );
 
     response.status(200).json({
       success: true,
@@ -1060,14 +1060,11 @@ router.get('/profile/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const user = await UserModel.findById(id, [
-      'name',
-      'email',
-      'views',
-      'bio',
-      'artistType',
-      'profilePictureLink',
-    ]);
+    const user = await UserModel.findById(id);
+
+    const totalLikes = user.images.reduce((sum, image) => {
+      return sum + (image.likes ? image.likes.length : 0);
+    }, 0);
 
     if (!user) {
       return res.status(404).json({ success: false, error: 'User not found' });
@@ -1076,6 +1073,7 @@ router.get('/profile/:id', async (req, res) => {
     res.status(200).json({
       success: true,
       user,
+      totalLikes,
     });
   } catch (error) {
     console.error('Error fetching user profile by ID:', error);

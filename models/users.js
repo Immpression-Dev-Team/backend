@@ -69,6 +69,12 @@ const UserSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    images: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Image',
+      },
+    ],
     likedImages: [
       {
         type: mongoose.Schema.Types.ObjectId,
