@@ -69,6 +69,10 @@ const UserSchema = new Schema(
       type: Boolean,
       default: false,
     },
+    stripeAccountId: {
+      type: String,
+      default: null,
+    },    
     likedImages: [
       {
         type: mongoose.Schema.Types.ObjectId,
