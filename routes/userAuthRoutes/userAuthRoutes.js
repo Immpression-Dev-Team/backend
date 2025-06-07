@@ -304,6 +304,7 @@ router.get('/get-profile', isUserAuthorized, async (request, response) => {
         bio: user.bio,
         artistType: user.artistType,
         accountType: user.accountType,
+        likedImages: user.likedImages,
       },
     });
   } catch (error) {
@@ -398,7 +399,6 @@ router.post('/profile-picture', async (request, response) => {
 router.get('/profile-picture/:userId', async (request, response) => {
   try {
     const { userId } = request.params;
-    console.log(`Received request for profile picture of userId: ${userId}`);
 
     const user = await UserModel.findById(userId);
 
@@ -415,10 +415,6 @@ router.get('/profile-picture/:userId', async (request, response) => {
         .status(404)
         .json({ success: false, error: 'Profile picture not found' });
     }
-
-    console.log(
-      `Returning profile picture for user ${userId}: ${user.profilePictureLink}`
-    );
 
     response.status(200).json({
       success: true,

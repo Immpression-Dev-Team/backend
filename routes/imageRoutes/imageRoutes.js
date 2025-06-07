@@ -220,6 +220,7 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
       price: image.price,
       category: image.category,
       createdAt: image.createdAt,
+      artistName: image.artistName || image.userId?.name,
       artist: { name: image.userId?.name || 'Unknown Artist' }, // handle missing userId
     }));
 
@@ -484,8 +485,6 @@ router.patch('/increment-image-views/:id', async (req, res) => {
       });
     }
 
-    console.log(`Received request to increment views for image ID: ${id}`);
-
     // Find image by ID and increment view count
     const updatedImage = await ImageModel.findByIdAndUpdate(
       id,
@@ -500,10 +499,6 @@ router.patch('/increment-image-views/:id', async (req, res) => {
         error: 'Image not found',
       });
     }
-
-    console.log(
-      `Incremented views for image ID: ${id}, new view count: ${updatedImage.views}`
-    );
 
     res.status(200).json({
       success: true,
@@ -660,54 +655,152 @@ router.get('/current-bid/:imageId', isUserAuthorized, async (req, res) => {
 });
 
 // Route to like/unlike an image
+// router.post('/image/:id/like', isUserAuthorized, async (req, res) => {
+//   try {
+//     const imageId = req.params.id;
+//     const userId = req.user._id;
+
+//     const image = await ImageModel.findById(imageId).select('likes');
+//     const user = await UserModel.findById(userId).select('likedImages');
+
+//     if (!image || !user) {
+//       return res
+//         .status(404)
+//         .json({ success: false, error: 'Image or user not found' });
+//     }
+
+//     let hasLiked = image.likes.includes(userId);
+
+//     if (hasLiked) {
+//       await ImageModel.updateOne(
+//         { _id: imageId },
+//         { $pull: { likes: userId } }
+//       );
+
+//       await UserModel.updateOne(
+//         { _id: userId },
+//         { $pull: { likedImages: imageId } }
+//       );
+//     } else {
+//       await ImageModel.updateOne(
+//         { _id: imageId },
+//         { $addToSet: { likes: userId } }
+//       );
+
+//       await UserModel.updateOne(
+//         { _id: userId },
+//         { $addToSet: { likedImages: imageId } }
+//       );
+//     }
+
+//     const updatedImage = await ImageModel.findById(imageId).select('likes');
+
+//     res.status(200).json({
+//       success: true,
+//       likesCount: updatedImage.likes.length,
+//       hasLiked: !hasLiked,
+//     });
+//   } catch (error) {
+//     console.error('Error toggling like:', error);
+//     res.status(500).json({ success: false, error: 'Internal Server Error' });
+//   }
+// });
+
 router.post('/image/:id/like', isUserAuthorized, async (req, res) => {
   try {
+    console.log('liking image');
     const imageId = req.params.id;
     const userId = req.user._id;
 
-    const image = await ImageModel.findById(imageId).select('likes');
-    const user = await UserModel.findById(userId).select('likedImages');
-
-    if (!image || !user) {
-      return res
-        .status(404)
-        .json({ success: false, error: 'Image or user not found' });
+    if (!mongoose.Types.ObjectId.isValid(imageId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid image ID',
+      });
     }
 
-    let hasLiked = image.likes.includes(userId);
+    console.log('imageid is valid');
 
-    if (hasLiked) {
-      await ImageModel.updateOne(
-        { _id: imageId },
-        { $pull: { likes: userId } }
-      );
+    // Use a transaction to ensure both updates succeed or fail together
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-      await UserModel.updateOne(
-        { _id: userId },
-        { $pull: { likedImages: imageId } }
-      );
-    } else {
-      await ImageModel.updateOne(
-        { _id: imageId },
-        { $addToSet: { likes: userId } }
-      );
+    console.log('session started');
+    try {
+      const image = await ImageModel.findById(imageId)
+        .select('likes')
+        .session(session);
 
-      await UserModel.updateOne(
-        { _id: userId },
-        { $addToSet: { likedImages: imageId } }
-      );
+      const user = await UserModel.findById(userId)
+        .select('likedImages')
+        .session(session);
+
+      if (!image || !user) {
+        await session.abortTransaction();
+        return res.status(404).json({
+          success: false,
+          error: 'Image or user not found',
+        });
+      }
+
+      console.log('user and image found', image, user);
+
+      const hasLiked = image.likes.some((like) => like.equals(userId));
+
+      console.log('hasliked', hasLiked);
+
+      if (hasLiked) {
+        // Remove like from image
+        await ImageModel.updateOne(
+          { _id: imageId },
+          { $pull: { likes: userId } },
+          { session }
+        );
+
+        await UserModel.updateOne(
+          { _id: userId },
+          { $pull: { likedImages: imageId } },
+          { session }
+        );
+      } else {
+        await ImageModel.updateOne(
+          { _id: imageId },
+          { $addToSet: { likes: userId } },
+          { session }
+        );
+
+        await UserModel.updateOne(
+          { _id: userId },
+          { $addToSet: { likedImages: imageId } },
+          { session }
+        );
+      }
+
+      await session.commitTransaction();
+
+      const updatedImage = await ImageModel.findById(imageId)
+        .select('likes')
+        .lean();
+
+      console.log('updatedimage', updatedImage);
+
+      res.status(200).json({
+        success: true,
+        likesCount: updatedImage.likes.length,
+        hasLiked: !hasLiked,
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
     }
-
-    const updatedImage = await ImageModel.findById(imageId).select('likes');
-
-    res.status(200).json({
-      success: true,
-      likesCount: updatedImage.likes.length,
-      hasLiked: !hasLiked,
-    });
   } catch (error) {
     console.error('Error toggling like:', error);
-    res.status(500).json({ success: false, error: 'Internal Server Error' });
+    res.status(500).json({
+      success: false,
+      error: 'Internal Server Error',
+    });
   }
 });
 
