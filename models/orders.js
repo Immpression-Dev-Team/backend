@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const { Schema } = mongoose;
 
@@ -40,14 +40,35 @@ const OrderSchema = new Schema(
     // Reference to user
     userId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      ref: "User",
       required: true,
+    },
+    // Payment status
+    status: {
+      type: String,
+      enum: ["pending", "paid", "failed", "refunded"],
+      default: "pending",
+    },
+    // Stripe payment intent ID
+    paymentIntentId: {
+      type: String,
+    },
+    // Payment timestamps
+    paidAt: {
+      type: Date,
+    },
+    refundedAt: {
+      type: Date,
+    },
+    // Payment failure reason
+    failureReason: {
+      type: String,
     },
   },
   { timestamps: true }
 );
 
 const OrderModel =
-  mongoose.models.Order || mongoose.model('Order', OrderSchema);
+  mongoose.models.Order || mongoose.model("Order", OrderSchema);
 
 export default OrderModel;

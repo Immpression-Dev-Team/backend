@@ -1,41 +1,41 @@
 // Import the Express framework
-import express from 'express';
+import express from "express";
 
 // Import the Mongoose library for MongoDB
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 // Import cookie-parser middleware for parsing cookies
-import cookieParser from 'cookie-parser';
+import cookieParser from "cookie-parser";
 
 // Import morgan for logging requests
-import morgan from 'morgan';
+import morgan from "morgan";
 
 // Import authentication routes
-import authRoutes from './routes/userAuthRoutes/userAuthRoutes.js';
+import authRoutes from "./routes/userAuthRoutes/userAuthRoutes.js";
 
 // Import image handling routes
-import imageRoutes from './routes/imageRoutes/imageRoutes.js';
+import imageRoutes from "./routes/imageRoutes/imageRoutes.js";
 
 // Import order handling routes
-import orderRoutes from './routes/orderRoutes/orderRoutes.js'; // New import
+import orderRoutes from "./routes/orderRoutes/orderRoutes.js"; // New import
 
 // Import admin authentication routes
-import adminAuthRoutes from './routes/admin-userAuthRoutes/admin-userAuthRoutes.js';
+import adminAuthRoutes from "./routes/admin-userAuthRoutes/admin-userAuthRoutes.js";
 
 // Import admin-protected routes
-import adminRoutes from './routes/admin-userAuthRoutes/admin-userAuthRoutes.js';
+import adminRoutes from "./routes/admin-userAuthRoutes/admin-userAuthRoutes.js";
 
 // Import the MongoDB connection URL from config file
-import { MONGO_URL } from './config/config.js';
+import { MONGO_URL } from "./config/config.js";
 
 // Import body-parser
-import bodyParser from 'body-parser';
+import bodyParser from "body-parser";
 
 // Import cors
-import cors from 'cors';
+import cors from "cors";
 
 // Import dotenv
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 
 // Load environment variables
 dotenv.config();
@@ -46,8 +46,8 @@ const corsOrigins = [
   `http://localhost:${process.env.VITE_APP_WEB_PORT}`, // Web service
   `http://${process.env.HOST_IP}:19000`, // Expo Go
   `http://${process.env.HOST_IP}:8081`, // Expo Development Build
-  'http://localhost:5173', // Admin Locally
-  'https://immpression-admin.vercel.app', // Admin Online
+  "http://localhost:5173", // Admin Locally
+  "https://immpression-admin.vercel.app", // Admin Online
 ];
 
 // Create an Express application
@@ -73,7 +73,7 @@ app.use(
       if (!origin || corsOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error('Not allowed by CORS'));
+        callback(new Error("Not allowed by CORS"));
       }
     },
     credentials: true, // Allow cookies
@@ -82,27 +82,27 @@ app.use(
 
 // Define a custom log format for Morgan
 const customFormat =
-  '[:date[clf]] :method :url :status :res[content-length] - :response-time ms';
+  "[:date[clf]] :method :url :status :res[content-length] - :response-time ms";
 
 // Use Morgan middleware to log HTTP requests with the defined custom format
 app.use(morgan(customFormat));
 
-import jwt from 'jsonwebtoken';
+import jwt from "jsonwebtoken";
 
-app.post('/refresh-token', (req, res) => {
+app.post("/refresh-token", (req, res) => {
   const { token: oldToken } = req.body;
 
   if (!oldToken)
-    return res.status(401).json({ success: false, error: 'No token provided' });
+    return res.status(401).json({ success: false, error: "No token provided" });
 
   jwt.verify(oldToken, process.env.JWT_SECRET, (err, decoded) => {
     if (err)
       return res
         .status(403)
-        .json({ success: false, error: 'Invalid or expired token' });
+        .json({ success: false, error: "Invalid or expired token" });
 
     const newToken = jwt.sign({ _id: decoded._id }, process.env.JWT_SECRET, {
-      expiresIn: '1h',
+      expiresIn: "1h",
     });
 
     res.json({ success: true, token: newToken });
@@ -110,19 +110,19 @@ app.post('/refresh-token', (req, res) => {
 });
 
 // Use authentication routes for root path
-app.use('/', authRoutes);
+app.use("/", authRoutes);
 
 // Use image routes for root path
-app.use('/', imageRoutes);
+app.use("/", imageRoutes);
 
 // Use order routes for root path
-app.use('/', orderRoutes); // New route for orders
+app.use("/", orderRoutes); // New route for orders
 
 // Use admin authentication routes
-app.use('/api/admin', adminAuthRoutes);
+app.use("/api/admin", adminAuthRoutes);
 
 // Use admin protected routes
-app.use('/api/admin', adminRoutes);
+app.use("/api/admin", adminRoutes);
 
 // Middleware to parse URL-encoded bodies in incoming requests
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -138,18 +138,18 @@ mongoose
   // Connect to MongoDB using the provided URL
   .connect(MONGO_URL)
   // Log successful connection
-  .then(() => console.log('MongoDB connection successful'))
+  .then(() => console.log("MongoDB connection successful"))
   // Handle connection errors
   .catch((error) => {
     // Log the error
-    console.error('Error connecting to MongoDB:', error);
+    console.error("Error connecting to MongoDB:", error);
     // Exit the process with an error code
     process.exit(1);
   });
 
 // Default server route
-app.get('/', (req, res) => {
-  res.send({ status: 'Server is running' });
+app.get("/", (req, res) => {
+  res.send({ status: "Server is running" });
 });
 
 // Start the server and listen on the defined port
