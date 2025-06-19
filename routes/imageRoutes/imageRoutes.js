@@ -243,12 +243,8 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
     // Get the image ID from the request parameters
     const imageId = request.params.id;
 
-    console.log('igothere');
-
     // Find the image in the database by its ID and user ID
-    const image = await ImageModel.findOne({ _id: imageId, userId: userId });
-
-    console.log('ifound image');
+    const image = await ImageModel.findOne({ _id: imageId }).lean();
 
     if (!image) {
       return response
@@ -256,20 +252,7 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
         .json({ success: false, error: 'Image not found' });
     }
 
-    // Prepare the response object
-    const responseData = {
-      _id: image._id,
-      artistName: image.artistName,
-      name: image.name,
-      description: image.description,
-      price: image.price,
-      imageLink: image.imageLink,
-      category: image.category,
-      views: image.views,
-    };
-
-    // Send the combined JSON response
-    response.json(responseData);
+    response.json(image);
   } catch (err) {
     console.error(err);
     response.status(500).json({ success: false, error: err.message });

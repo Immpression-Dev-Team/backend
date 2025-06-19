@@ -53,10 +53,10 @@ const corsOrigins = [
 // Create an Express application
 const app = express();
 
-app.use((req, res, next) => {
-  // console.log(`Incoming request: ${req.method} ${req.url}`);
-  next();
-});
+// app.use((req, res, next) => {
+//   // console.log(`Incoming request: ${req.method} ${req.url}`);
+//   next();
+// });
 
 // Middleware to parse JSON bodies in incoming requests
 app.use(express.json());
@@ -84,7 +84,7 @@ const customFormat =
   '[:date[clf]] :method :url :status :res[content-length] - :response-time ms';
 
 // Use Morgan middleware to log HTTP requests with the defined custom format
-// app.use(morgan(customFormat));
+app.use(morgan(customFormat));
 
 import jwt from 'jsonwebtoken';
 
