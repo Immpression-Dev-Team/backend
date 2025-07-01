@@ -5,7 +5,9 @@ import { isUserAuthorized } from "../../utils/authUtils.js";
 import Stripe from "stripe";
 
 // env variable
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+const stripe = Stripe(
+  "sk_test_51RWFfQ4DVblvV3YcHPcVHZM9B4Qt7lXo2ThFd96iWmDEQc0NzWRaQjpvxi6fgN5T12xsX0CS9OMOmnlGZLkyhZ7I00vExziQu7"
+);
 
 const router = express.Router();
 
@@ -105,7 +107,9 @@ router.post("/create-payment-intent", async (req, res) => {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: price,
       currency: "usd",
-      payment_method_types: ["card"],
+      automatic_payment_methods: {
+        enabled: true,
+      },
       metadata: {
         orderId: orderId,
       },
@@ -118,7 +122,100 @@ router.post("/create-payment-intent", async (req, res) => {
   }
 });
 
+router.post("/payout", async (req, res) => {
+  try {
+    const { amount, stripeConnectId } = req.body;
+
+    const transfer = await stripe.transfers.create({
+      amount: amount * 100,
+      currency: "usd",
+      destination: stripeConnectId,
+    });
+
+    res.status(200).json({
+      success: true,
+      data: transfer,
+    });
+  } catch (error) {
+    console.error("Error creating payout:", error);
+  }
+});
+
+router.post("/create-stripe-account", async (req, res) => {
+  try {
+    console.log("Creating Stripe account request received");
+    const account = await stripe.accounts.create({
+      type: "express", // or 'standard'
+      country: "US",
+      email: "test@test.com",
+      business_type: "individual", // For individuals
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
+      metadata: {
+        app_user_id: "123", // Link to your app's user ID
+        username: "test",
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      data: account,
+    });
+  } catch (error) {
+    console.error("Error creating Stripe account:", error);
+    throw error;
+  }
+});
+router.post("/createStripeOnboardingLink", async (req, res) => {
+  try {
+    console.log("req", req.body);
+
+    const accountLink = await stripe.accountLinks.create({
+      account: "acct_1RgBXj4I4bKGvEVL",
+      refresh_url: "https://immpression.com/stripe/reauth",
+      return_url: "https://immpression.com/stripe/success",
+      type: "account_onboarding",
+    });
+    res.status(200).json({
+      success: true,
+      data: accountLink,
+    });
+  } catch (error) {
+    console.error("Error creating Stripe onboarding link:", error);
+  }
+});
 // Webhook handler for Stripe events
+
+router.post(
+  "/webhook/stripe",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    const sig = req.headers["stripe-signature"];
+
+    try {
+      const event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+
+      if (event.type === "account.updated") {
+        const account = event.data.object;
+
+        // Update user's onboarding status
+        if (account.details_submitted && account.charges_enabled) {
+          updateUserOnboardingStatus(account.id, true);
+        }
+      }
+
+      res.json({ received: true });
+    } catch (err) {
+      res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+  }
+);
 router.post(
   "/webhook",
   express.raw({ type: "application/json" }),
@@ -231,6 +328,7 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
       price,
       artName,
       artistName,
+      transactionId,
     } = req.body;
 
     // Find the order first
@@ -250,6 +348,7 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
     if (price) updateData.price = price;
     if (artName) updateData.artName = artName;
     if (artistName) updateData.artistName = artistName;
+    if (transactionId) updateData.transactionId = transactionId;
 
     // Update the order
     const updatedOrder = await OrderModel.findByIdAndUpdate(
