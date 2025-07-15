@@ -147,15 +147,15 @@ router.post("/create-stripe-account", async (req, res) => {
     const account = await stripe.accounts.create({
       type: "express", // or 'standard'
       country: "US",
-      email: "test@test.com",
+      email: req.userEmail,
       business_type: "individual", // For individuals
       capabilities: {
         card_payments: { requested: true },
         transfers: { requested: true },
       },
       metadata: {
-        app_user_id: "123", // Link to your app's user ID
-        username: "test",
+        app_user_id: req.userId, // Link to your app's user ID
+        username: req.userName,
       },
     });
 
@@ -170,10 +170,8 @@ router.post("/create-stripe-account", async (req, res) => {
 });
 router.post("/createStripeOnboardingLink", async (req, res) => {
   try {
-    console.log("req", req.body);
-
     const accountLink = await stripe.accountLinks.create({
-      account: "acct_1RgBXj4I4bKGvEVL",
+      account: req.stripeConnectId,
       refresh_url: "https://immpression.com/stripe/reauth",
       return_url: "https://immpression.com/stripe/success",
       type: "account_onboarding",
@@ -188,34 +186,6 @@ router.post("/createStripeOnboardingLink", async (req, res) => {
 });
 // Webhook handler for Stripe events
 
-router.post(
-  "/webhook/stripe",
-  express.raw({ type: "application/json" }),
-  (req, res) => {
-    const sig = req.headers["stripe-signature"];
-
-    try {
-      const event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-
-      if (event.type === "account.updated") {
-        const account = event.data.object;
-
-        // Update user's onboarding status
-        if (account.details_submitted && account.charges_enabled) {
-          updateUserOnboardingStatus(account.id, true);
-        }
-      }
-
-      res.json({ received: true });
-    } catch (err) {
-      res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-  }
-);
 router.post(
   "/webhook",
   express.raw({ type: "application/json" }),
