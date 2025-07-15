@@ -5,9 +5,7 @@ import { isUserAuthorized } from "../../utils/authUtils.js";
 import Stripe from "stripe";
 
 // env variable
-const stripe = Stripe(
-  "sk_test_51RWFfQ4DVblvV3YcHPcVHZM9B4Qt7lXo2ThFd96iWmDEQc0NzWRaQjpvxi6fgN5T12xsX0CS9OMOmnlGZLkyhZ7I00vExziQu7"
-);
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 const router = express.Router();
 
@@ -197,7 +195,7 @@ router.post(
       event = stripe.webhooks.constructEvent(
         req.body,
         sig,
-        process.env.STRIPE_WEBHOOK_SECRET
+        process.env.STRIPE_SECRET_KEY
       );
     } catch (err) {
       console.error("Webhook signature verification failed:", err.message);
