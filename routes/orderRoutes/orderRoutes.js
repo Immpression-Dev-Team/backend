@@ -4,6 +4,8 @@ import { isUserAuthorized } from "../../utils/authUtils.js";
 
 import Stripe from "stripe";
 
+const stripe = Stripe(process.env.STRIPE_TEST_KEY);
+
 const router = express.Router();
 
 router.get("/orderDetails/:id", async (req, res) => {
@@ -99,8 +101,6 @@ router.post("/create-payment-intent", async (req, res) => {
     //     .json({ error: "Missing order price or artist Stripe account" });
     // }
 
-    const stripe = Stripe(process.env.STRIPE_TEST_KEY);
-
     const paymentIntent = await stripe.paymentIntents.create({
       amount: price,
       currency: "usd",
@@ -123,8 +123,6 @@ router.post("/payout", async (req, res) => {
   try {
     const { amount, stripeConnectId } = req.body;
 
-    const stripe = Stripe(process.env.STRIPE_TEST_KEY);
-
     const transfer = await stripe.transfers.create({
       amount: amount * 100,
       currency: "usd",
@@ -143,7 +141,6 @@ router.post("/payout", async (req, res) => {
 router.post("/create-stripe-account", async (req, res) => {
   try {
     console.log("Creating Stripe account request received");
-    const stripe = Stripe(process.env.STRIPE_TEST_KEY);
     const account = await stripe.accounts.create({
       type: "express", // or 'standard'
       country: "US",
@@ -170,7 +167,6 @@ router.post("/create-stripe-account", async (req, res) => {
 });
 router.post("/createStripeOnboardingLink", async (req, res) => {
   try {
-    const stripe = Stripe(process.env.STRIPE_TEST_KEY);
     const accountLink = await stripe.accountLinks.create({
       account: req.stripeConnectId,
       refresh_url: "https://immpression.com/stripe/reauth",
@@ -195,7 +191,6 @@ router.post(
     let event;
 
     try {
-      const stripe = Stripe(process.env.STRIPE_TEST_KEY);
       event = stripe.webhooks.constructEvent(
         req.body,
         sig,
