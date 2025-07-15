@@ -3,9 +3,7 @@ import OrderModel from "../../models/orders.js";
 import { isUserAuthorized } from "../../utils/authUtils.js";
 
 import Stripe from "stripe";
-
-// env variable
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+const stripe = Stripe(process.env.STRIPE_TEST_KEY);
 
 const router = express.Router();
 
@@ -195,7 +193,7 @@ router.post(
       event = stripe.webhooks.constructEvent(
         req.body,
         sig,
-        process.env.STRIPE_SECRET_KEY
+        process.env.STRIPE_TEST_KEY
       );
     } catch (err) {
       console.error("Webhook signature verification failed:", err.message);
