@@ -1,5 +1,6 @@
 import express from "express";
 import OrderModel from "../../models/orders.js";
+import UserModel from '../../models/users.js';
 import { isUserAuthorized } from "../../utils/authUtils.js";
 
 import Stripe from "stripe";
@@ -7,6 +8,7 @@ import Stripe from "stripe";
 const stripe = Stripe(process.env.STRIPE_TEST_KEY);
 
 const router = express.Router();
+import jwt from "jsonwebtoken";
 
 router.get("/orderDetails/:id", async (req, res) => {
   try {
@@ -141,34 +143,54 @@ router.post("/payout", async (req, res) => {
 router.post("/create-stripe-account", async (req, res) => {
   try {
     console.log("Creating Stripe account request received");
+    const token = req.cookies["auth-token"];
+    if (!token) {
+      return res.status(401).json({ success: false, message: "No token found" });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET); // your JWT_SECRET must match the one used when signing
+
+    const userId = decoded._id;
+
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
     const account = await stripe.accounts.create({
-      type: "express", // or 'standard'
+      type: "express",
       country: "US",
-      email: req.userEmail,
-      business_type: "individual", // For individuals
+      email: user.email,
+      business_type: "individual",
       capabilities: {
         card_payments: { requested: true },
         transfers: { requested: true },
       },
       metadata: {
-        app_user_id: req.userId, // Link to your app's user ID
-        username: req.userName,
+        app_user_id: user._id.toString(),
+        username: user.userName || "NoName",
       },
     });
+
+    user.stripeAccountId = account.id;
+    await user.save();
 
     res.status(200).json({
       success: true,
       data: account,
+      user: user,
+      message: "Stripe account created and user updated",
     });
   } catch (error) {
     console.error("Error creating Stripe account:", error);
-    throw error;
+    res.status(500).json({ success: false, message: "Stripe account creation failed" });
   }
 });
 router.post("/createStripeOnboardingLink", async (req, res) => {
+  console.log("----------------------------->>>>>>> ", req.body.stripeConnectId);
   try {
     const accountLink = await stripe.accountLinks.create({
-      account: req.stripeConnectId,
+      account: req.body.stripeConnectId, // Changed from req.stripeConnectId
       refresh_url: "https://immpression.com/stripe/reauth",
       return_url: "https://immpression.com/stripe/success",
       type: "account_onboarding",
@@ -179,6 +201,10 @@ router.post("/createStripeOnboardingLink", async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating Stripe onboarding link:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to create Stripe onboarding link"
+    });
   }
 });
 // Webhook handler for Stripe events
