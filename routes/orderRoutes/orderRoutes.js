@@ -142,21 +142,51 @@ router.post("/payout", async (req, res) => {
 
 router.post("/create-stripe-account", async (req, res) => {
   try {
-    console.log("Creating Stripe account request received");
+    // Step 1: Get and verify JWT token
     const token = req.cookies["auth-token"];
     if (!token) {
       return res.status(401).json({ success: false, message: "No token found" });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET); // your JWT_SECRET must match the one used when signing
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
 
     const userId = decoded._id;
 
+    // Step 2: Fetch user from DB
     const user = await UserModel.findById(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
+    // Step 3: If Stripe account exists, create new onboarding link
+    if (user.stripeAccountId) {
+      // Create new onboarding link for existing account
+      const accountLink = await stripe.accountLinks.create({
+        account: user.stripeAccountId,
+        refresh_url: process.env.STRIPE_REFRESH_URL || "https://immpression.com/stripe/reauth",
+        return_url: process.env.STRIPE_RETURN_URL || "https://immpression.com/stripe/success",
+        type: "account_onboarding",
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: accountLink,
+        user: {
+          _id: user._id,
+          email: user.email,
+          stripeAccountId: user.stripeAccountId,
+          stripeOnboardingCompleted: user.stripeOnboardingCompleted
+        },
+        message: "Stripe account already exists, new onboarding link generated",
+      });
+    }
+
+    // Step 4: Create Stripe account
     const account = await stripe.accounts.create({
       type: "express",
       country: "US",
@@ -172,41 +202,80 @@ router.post("/create-stripe-account", async (req, res) => {
       },
     });
 
+    // Step 5: Create onboarding link
+    const accountLink = await stripe.accountLinks.create({
+      account: account.id,
+      refresh_url: process.env.STRIPE_REFRESH_URL || "https://immpression.com/stripe/reauth",
+      return_url: process.env.STRIPE_RETURN_URL || "https://immpression.com/stripe/success",
+      type: "account_onboarding",
+    });
+
+    // Step 6: Save Stripe account ID to user
     user.stripeAccountId = account.id;
     await user.save();
 
-    res.status(200).json({
-      success: true,
-      data: account,
-      user: user,
-      message: "Stripe account created and user updated",
-    });
-  } catch (error) {
-    console.error("Error creating Stripe account:", error);
-    res.status(500).json({ success: false, message: "Stripe account creation failed" });
-  }
-});
-router.post("/createStripeOnboardingLink", async (req, res) => {
-  console.log("----------------------------->>>>>>> ", req.body.stripeConnectId);
-  try {
-    const accountLink = await stripe.accountLinks.create({
-      account: req.body.stripeConnectId, // Changed from req.stripeConnectId
-      refresh_url: "https://immpression.com/stripe/reauth",
-      return_url: "https://immpression.com/stripe/success",
-      type: "account_onboarding",
-    });
-    res.status(200).json({
+    // Step 7: Respond
+    const responseData = {
       success: true,
       data: accountLink,
+      user: {
+        _id: user._id,
+        email: user.email,
+        stripeAccountId: user.stripeAccountId,
+        stripeOnboardingCompleted: user.stripeOnboardingCompleted
+      },
+      message: "Stripe account created and onboarding link generated",
+    };
+
+    console.log("✅ Sending response to frontend:", {
+      success: responseData.success,
+      message: responseData.message,
+      accountLinkUrl: responseData.data?.url,
+      stripeAccountId: responseData.user?.stripeAccountId
     });
+
+    res.status(200).json(responseData);
+
   } catch (error) {
-    console.error("Error creating Stripe onboarding link:", error);
-    res.status(500).json({
-      success: false,
-      error: "Failed to create Stripe onboarding link"
+    console.error("❌ Error creating Stripe account:", error);
+    console.error("❌ Error details:", {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
     });
+
+    const errorResponse = {
+      success: false,
+      message: "Stripe account creation failed",
+      error: error.message
+    };
+
+    console.log("❌ Sending error response to frontend:", errorResponse);
+    res.status(500).json(errorResponse);
   }
 });
+
+// router.post("/createStripeOnboardingLink", async (req, res) => {
+//   console.log("----------------------------->>>>>>> ", req.body.stripeConnectId);
+//   try {
+//     const accountLink = await stripe.accountLinks.create({
+//       account: req.body.stripeConnectId, // Changed from req.stripeConnectId
+//       refresh_url: "https://immpression.com/stripe/reauth",
+//       return_url: "https://immpression.com/stripe/success",
+//       type: "account_onboarding",
+//     });
+//     res.status(200).json({
+//       success: true,
+//       data: accountLink,
+//     });
+//   } catch (error) {
+//     console.error("Error creating Stripe onboarding link:", error);
+//     res.status(500).json({
+//       success: false,
+//       error: "Failed to create Stripe onboarding link"
+//     });
+//   }
+// });
 // Webhook handler for Stripe events
 
 router.post(
@@ -278,6 +347,68 @@ router.post(
     }
   }
 );
+
+router.post("/check-stripe-status", async (req, res) => {
+  try {
+    const token = req.cookies["auth-token"];
+    if (!token) return res.status(401).json({ success: false, message: "No token found" });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
+
+    const user = await UserModel.findById(decoded._id);
+    if (!user || !user.stripeAccountId) {
+      return res.status(400).json({ success: false, message: "No Stripe account found for this user" });
+    }
+
+    const account = await stripe.accounts.retrieve(user.stripeAccountId);
+
+    const {
+      id: stripeAccountId,
+      details_submitted,
+      charges_enabled,
+      payouts_enabled,
+      requirements = {},
+    } = account;
+
+    const { currently_due = [], disabled_reason } = requirements;
+
+    // Update onboarding status if completed
+    if (details_submitted && !user.stripeOnboardingCompleted) {
+      user.stripeOnboardingCompleted = true;
+      user.stripeOnboardingCompletedAt = new Date();
+      await user.save();
+      console.log("✅ User onboarding completed:", user.email);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Stripe account status checked successfully",
+      data: {
+        stripeAccountId,
+        details_submitted,
+        charges_enabled,
+        payouts_enabled,
+        onboarding_completed: user.stripeOnboardingCompleted,
+        requirements: {
+          currently_due,
+          disabled_reason,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error checking Stripe account status:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to check Stripe account status",
+    });
+  }
+});
+
 
 router.get("/orders", async (req, res) => {
   try {
