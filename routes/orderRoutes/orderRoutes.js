@@ -1,13 +1,14 @@
 import express from "express";
 import OrderModel from "../../models/orders.js";
+import UserModel from "../../models/users.js";
 import { isUserAuthorized } from "../../utils/authUtils.js";
 
 import Stripe from "stripe";
 
-// env variable
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+const stripe = Stripe(process.env.STRIPE_TEST_KEY);
 
 const router = express.Router();
+import jwt from "jsonwebtoken";
 
 router.get("/orderDetails/:id", async (req, res) => {
   try {
@@ -84,6 +85,41 @@ router.post("/order", isUserAuthorized, async (req, res) => {
   }
 });
 
+router.post("/calculate-tax", async (req, res) => {
+  try {
+    const { amount, currency, address } = req.body;
+
+    // Create a tax calculation
+    const calculation = await stripe.tax.calculations.create({
+      currency: currency,
+      line_items: [
+        {
+          amount: amount,
+          reference: "artwork-purchase",
+        },
+      ],
+      customer_details: {
+        address: {
+          line1: address.line1,
+          city: address.city,
+          state: address.state,
+          postal_code: address.postal_code,
+          country: address.country,
+        },
+        address_source: "billing",
+      },
+    });
+
+    res.json({
+      taxAmount: calculation.tax_breakdown[0].amount,
+      taxRate: calculation.tax_breakdown[0].rate,
+      totalAmount: calculation.amount_total,
+    });
+  } catch (error) {
+    console.error("Tax calculation error:", error);
+    res.status(500).json({ error: "Tax calculation failed" });
+  }
+});
 
 router.post("/create-payment-intent", async (req, res) => {
   try {
@@ -107,7 +143,9 @@ router.post("/create-payment-intent", async (req, res) => {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: price,
       currency: "usd",
-      payment_method_types: ["card"],
+      automatic_payment_methods: {
+        enabled: true,
+      },
       metadata: {
         orderId: orderId,
       },
@@ -120,7 +158,176 @@ router.post("/create-payment-intent", async (req, res) => {
   }
 });
 
+router.post("/payout", async (req, res) => {
+  try {
+    const { amount, stripeConnectId } = req.body;
+
+    const transfer = await stripe.transfers.create({
+      amount: amount * 100,
+      currency: "usd",
+      destination: stripeConnectId,
+    });
+
+    res.status(200).json({
+      success: true,
+      data: transfer,
+    });
+  } catch (error) {
+    console.error("Error creating payout:", error);
+  }
+});
+
+router.post("/create-stripe-account", async (req, res) => {
+  try {
+    // Step 1: Get and verify JWT token
+    const token = req.cookies["auth-token"];
+    if (!token) {
+      return res
+        .status(401)
+        .json({ success: false, message: "No token found" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid or expired token" });
+    }
+
+    const userId = decoded._id;
+
+    // Step 2: Fetch user from DB
+    const user = await UserModel.findById(userId);
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    // Step 3: If Stripe account exists, create new onboarding link
+    if (user.stripeAccountId) {
+      // Create new onboarding link for existing account
+      const accountLink = await stripe.accountLinks.create({
+        account: user.stripeAccountId,
+        refresh_url:
+          process.env.STRIPE_REFRESH_URL ||
+          "https://immpression.com/stripe/reauth",
+        return_url:
+          process.env.STRIPE_RETURN_URL ||
+          "https://immpression.com/stripe/success",
+        type: "account_onboarding",
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: accountLink,
+        user: {
+          _id: user._id,
+          email: user.email,
+          stripeAccountId: user.stripeAccountId,
+          stripeOnboardingCompleted: user.stripeOnboardingCompleted,
+        },
+        message: "Stripe account already exists, new onboarding link generated",
+      });
+    }
+
+    // Step 4: Create Stripe account
+    const account = await stripe.accounts.create({
+      type: "express",
+      country: "US",
+      email: user.email,
+      business_type: "individual",
+      capabilities: {
+        card_payments: { requested: true },
+        transfers: { requested: true },
+      },
+      metadata: {
+        app_user_id: user._id.toString(),
+        username: user.userName || "NoName",
+      },
+    });
+
+    // Step 5: Create onboarding link
+    const accountLink = await stripe.accountLinks.create({
+      account: account.id,
+      refresh_url:
+        process.env.STRIPE_REFRESH_URL ||
+        "https://immpression.com/stripe/reauth",
+      return_url:
+        process.env.STRIPE_RETURN_URL ||
+        "https://immpression.com/stripe/success",
+      type: "account_onboarding",
+    });
+
+    // Step 6: Save Stripe account ID to user
+    user.stripeAccountId = account.id;
+    await user.save();
+
+    // Step 7: Respond
+    const responseData = {
+      success: true,
+      data: accountLink,
+      user: {
+        _id: user._id,
+        email: user.email,
+        stripeAccountId: user.stripeAccountId,
+        stripeOnboardingCompleted: user.stripeOnboardingCompleted,
+      },
+      message: "Stripe account created and onboarding link generated",
+    };
+
+    console.log("✅ Sending response to frontend:", {
+      success: responseData.success,
+      message: responseData.message,
+      accountLinkUrl: responseData.data?.url,
+      stripeAccountId: responseData.user?.stripeAccountId,
+    });
+
+    res.status(200).json(responseData);
+  } catch (error) {
+    console.error("❌ Error creating Stripe account:", error);
+    console.error("❌ Error details:", {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+    });
+
+    const errorResponse = {
+      success: false,
+      message: "Stripe account creation failed",
+      error: error.message,
+    };
+
+    console.log("❌ Sending error response to frontend:", errorResponse);
+    res.status(500).json(errorResponse);
+  }
+});
+
+// router.post("/createStripeOnboardingLink", async (req, res) => {
+//   console.log("----------------------------->>>>>>> ", req.body.stripeConnectId);
+//   try {
+//     const accountLink = await stripe.accountLinks.create({
+//       account: req.body.stripeConnectId, // Changed from req.stripeConnectId
+//       refresh_url: "https://immpression.com/stripe/reauth",
+//       return_url: "https://immpression.com/stripe/success",
+//       type: "account_onboarding",
+//     });
+//     res.status(200).json({
+//       success: true,
+//       data: accountLink,
+//     });
+//   } catch (error) {
+//     console.error("Error creating Stripe onboarding link:", error);
+//     res.status(500).json({
+//       success: false,
+//       error: "Failed to create Stripe onboarding link"
+//     });
+//   }
+// });
 // Webhook handler for Stripe events
+
 router.post(
   "/webhook",
   express.raw({ type: "application/json" }),
@@ -132,7 +339,7 @@ router.post(
       event = stripe.webhooks.constructEvent(
         req.body,
         sig,
-        process.env.STRIPE_WEBHOOK_SECRET
+        process.env.STRIPE_TEST_KEY
       );
     } catch (err) {
       console.error("Webhook signature verification failed:", err.message);
@@ -191,6 +398,77 @@ router.post(
   }
 );
 
+router.post("/check-stripe-status", async (req, res) => {
+  try {
+    const token = req.cookies["auth-token"];
+    if (!token)
+      return res
+        .status(401)
+        .json({ success: false, message: "No token found" });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid or expired token" });
+    }
+
+    const user = await UserModel.findById(decoded._id);
+    if (!user || !user.stripeAccountId) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "No Stripe account found for this user",
+        });
+    }
+
+    const account = await stripe.accounts.retrieve(user.stripeAccountId);
+
+    const {
+      id: stripeAccountId,
+      details_submitted,
+      charges_enabled,
+      payouts_enabled,
+      requirements = {},
+    } = account;
+
+    const { currently_due = [], disabled_reason } = requirements;
+
+    // Update onboarding status if completed
+    if (details_submitted && !user.stripeOnboardingCompleted) {
+      user.stripeOnboardingCompleted = true;
+      user.stripeOnboardingCompletedAt = new Date();
+      await user.save();
+      console.log("✅ User onboarding completed:", user.email);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Stripe account status checked successfully",
+      data: {
+        stripeAccountId,
+        details_submitted,
+        charges_enabled,
+        payouts_enabled,
+        onboarding_completed: user.stripeOnboardingCompleted,
+        requirements: {
+          currently_due,
+          disabled_reason,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error checking Stripe account status:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to check Stripe account status",
+    });
+  }
+});
+
 router.get("/orders", async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -242,6 +520,7 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
       price,
       artName,
       artistName,
+      transactionId,
     } = req.body;
 
     // Find the order first
@@ -261,6 +540,7 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
     if (price) updateData.price = price;
     if (artName) updateData.artName = artName;
     if (artistName) updateData.artistName = artistName;
+    if (transactionId) updateData.transactionId = transactionId;
 
     // Update the order
     const updatedOrder = await OrderModel.findByIdAndUpdate(

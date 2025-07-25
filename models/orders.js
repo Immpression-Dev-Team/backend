@@ -69,6 +69,10 @@ const OrderSchema = new Schema(
     failureReason: {
       type: String,
     },
+    // Transaction ID
+    transactionId: {
+      type: String,
+    },
   },
   { timestamps: true }
 );

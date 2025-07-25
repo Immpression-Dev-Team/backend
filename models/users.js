@@ -72,7 +72,15 @@ const UserSchema = new Schema(
     stripeAccountId: {
       type: String,
       default: null,
-    },    
+    },
+    stripeOnboardingCompleted: {
+      type: Boolean,
+      default: false,
+    },
+    stripeOnboardingCompletedAt: {
+      type: Date,
+      default: null,
+    },
     likedImages: [
       {
         type: mongoose.Schema.Types.ObjectId,
