@@ -1,6 +1,6 @@
 import express from "express";
 import OrderModel from "../../models/orders.js";
-import UserModel from '../../models/users.js';
+import UserModel from "../../models/users.js";
 import { isUserAuthorized } from "../../utils/authUtils.js";
 
 import Stripe from "stripe";
@@ -84,6 +84,42 @@ router.post("/order", isUserAuthorized, async (req, res) => {
   }
 });
 
+router.post("/calculate-tax", async (req, res) => {
+  try {
+    const { amount, currency, address } = req.body;
+
+    // Create a tax calculation
+    const calculation = await stripe.tax.calculations.create({
+      currency: currency,
+      line_items: [
+        {
+          amount: amount,
+          reference: "artwork-purchase",
+        },
+      ],
+      customer_details: {
+        address: {
+          line1: address.line1,
+          city: address.city,
+          state: address.state,
+          postal_code: address.postal_code,
+          country: address.country,
+        },
+        address_source: "billing",
+      },
+    });
+
+    res.json({
+      taxAmount: calculation.tax_breakdown[0].amount,
+      taxRate: calculation.tax_breakdown[0].rate,
+      totalAmount: calculation.amount_total,
+    });
+  } catch (error) {
+    console.error("Tax calculation error:", error);
+    res.status(500).json({ error: "Tax calculation failed" });
+  }
+});
+
 router.post("/create-payment-intent", async (req, res) => {
   try {
     const { orderId, price } = req.body;
@@ -145,14 +181,18 @@ router.post("/create-stripe-account", async (req, res) => {
     // Step 1: Get and verify JWT token
     const token = req.cookies["auth-token"];
     if (!token) {
-      return res.status(401).json({ success: false, message: "No token found" });
+      return res
+        .status(401)
+        .json({ success: false, message: "No token found" });
     }
 
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch (err) {
-      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid or expired token" });
     }
 
     const userId = decoded._id;
@@ -160,7 +200,9 @@ router.post("/create-stripe-account", async (req, res) => {
     // Step 2: Fetch user from DB
     const user = await UserModel.findById(userId);
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
     // Step 3: If Stripe account exists, create new onboarding link
@@ -168,8 +210,12 @@ router.post("/create-stripe-account", async (req, res) => {
       // Create new onboarding link for existing account
       const accountLink = await stripe.accountLinks.create({
         account: user.stripeAccountId,
-        refresh_url: process.env.STRIPE_REFRESH_URL || "https://immpression.com/stripe/reauth",
-        return_url: process.env.STRIPE_RETURN_URL || "https://immpression.com/stripe/success",
+        refresh_url:
+          process.env.STRIPE_REFRESH_URL ||
+          "https://immpression.com/stripe/reauth",
+        return_url:
+          process.env.STRIPE_RETURN_URL ||
+          "https://immpression.com/stripe/success",
         type: "account_onboarding",
       });
 
@@ -180,7 +226,7 @@ router.post("/create-stripe-account", async (req, res) => {
           _id: user._id,
           email: user.email,
           stripeAccountId: user.stripeAccountId,
-          stripeOnboardingCompleted: user.stripeOnboardingCompleted
+          stripeOnboardingCompleted: user.stripeOnboardingCompleted,
         },
         message: "Stripe account already exists, new onboarding link generated",
       });
@@ -205,8 +251,12 @@ router.post("/create-stripe-account", async (req, res) => {
     // Step 5: Create onboarding link
     const accountLink = await stripe.accountLinks.create({
       account: account.id,
-      refresh_url: process.env.STRIPE_REFRESH_URL || "https://immpression.com/stripe/reauth",
-      return_url: process.env.STRIPE_RETURN_URL || "https://immpression.com/stripe/success",
+      refresh_url:
+        process.env.STRIPE_REFRESH_URL ||
+        "https://immpression.com/stripe/reauth",
+      return_url:
+        process.env.STRIPE_RETURN_URL ||
+        "https://immpression.com/stripe/success",
       type: "account_onboarding",
     });
 
@@ -222,7 +272,7 @@ router.post("/create-stripe-account", async (req, res) => {
         _id: user._id,
         email: user.email,
         stripeAccountId: user.stripeAccountId,
-        stripeOnboardingCompleted: user.stripeOnboardingCompleted
+        stripeOnboardingCompleted: user.stripeOnboardingCompleted,
       },
       message: "Stripe account created and onboarding link generated",
     };
@@ -231,23 +281,22 @@ router.post("/create-stripe-account", async (req, res) => {
       success: responseData.success,
       message: responseData.message,
       accountLinkUrl: responseData.data?.url,
-      stripeAccountId: responseData.user?.stripeAccountId
+      stripeAccountId: responseData.user?.stripeAccountId,
     });
 
     res.status(200).json(responseData);
-
   } catch (error) {
     console.error("❌ Error creating Stripe account:", error);
     console.error("❌ Error details:", {
       message: error.message,
       stack: error.stack,
-      name: error.name
+      name: error.name,
     });
 
     const errorResponse = {
       success: false,
       message: "Stripe account creation failed",
-      error: error.message
+      error: error.message,
     };
 
     console.log("❌ Sending error response to frontend:", errorResponse);
@@ -351,18 +400,28 @@ router.post(
 router.post("/check-stripe-status", async (req, res) => {
   try {
     const token = req.cookies["auth-token"];
-    if (!token) return res.status(401).json({ success: false, message: "No token found" });
+    if (!token)
+      return res
+        .status(401)
+        .json({ success: false, message: "No token found" });
 
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch {
-      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid or expired token" });
     }
 
     const user = await UserModel.findById(decoded._id);
     if (!user || !user.stripeAccountId) {
-      return res.status(400).json({ success: false, message: "No Stripe account found for this user" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "No Stripe account found for this user",
+        });
     }
 
     const account = await stripe.accounts.retrieve(user.stripeAccountId);
@@ -408,7 +467,6 @@ router.post("/check-stripe-status", async (req, res) => {
     });
   }
 });
-
 
 router.get("/orders", async (req, res) => {
   try {
