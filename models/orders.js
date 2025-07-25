@@ -4,6 +4,11 @@ const { Schema } = mongoose;
 
 const OrderSchema = new Schema(
   {
+    imageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Image",
+      required: true,
+    },
     // Name of the artwork
     artName: {
       type: String,

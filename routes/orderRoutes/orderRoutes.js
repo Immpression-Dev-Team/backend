@@ -34,10 +34,10 @@ router.get("/orderDetails/:id", async (req, res) => {
 
 router.post("/order", isUserAuthorized, async (req, res) => {
   try {
-    const { artName, artistName, price, imageLink, deliveryDetails } = req.body;
+    const { imageId, artName, artistName, price, imageLink, deliveryDetails } = req.body;
 
     // Validate input
-    if (!artName || !artistName || !price || !deliveryDetails) {
+    if (!imageId || !artName || !artistName || !price || !deliveryDetails) {
       return res.status(400).json({
         success: false,
         error: "Missing required order fields.",
@@ -56,6 +56,7 @@ router.post("/order", isUserAuthorized, async (req, res) => {
 
     // Create the order
     const newOrder = new OrderModel({
+      imageId,
       artName,
       artistName,
       price,
@@ -475,15 +476,23 @@ router.get("/orders", async (req, res) => {
     const skip = (page - 1) * limit;
 
     const orders = await OrderModel.find()
-      .sort({ createdAt: -1 }) // Sort by newest first
+      .populate("imageId", "imageLink") // 👈 pulls imageLink from referenced Image
+      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
 
     const totalOrders = await OrderModel.countDocuments();
 
+    // 👇 Flatten imageLink into top-level order field
+    const enrichedOrders = orders.map((order) => {
+      const plain = order.toObject();
+      plain.imageLink = order.imageId?.imageLink || "https://via.placeholder.com/50";
+      return plain;
+    });
+
     res.status(200).json({
       success: true,
-      data: orders,
+      data: enrichedOrders,
       pagination: {
         currentPage: page,
         totalPages: Math.ceil(totalOrders / limit),
@@ -499,6 +508,7 @@ router.get("/orders", async (req, res) => {
     });
   }
 });
+
 
 router.put("/order/:id", isUserAuthorized, async (req, res) => {
   try {
