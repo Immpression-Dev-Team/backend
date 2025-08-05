@@ -81,6 +81,12 @@ const UserSchema = new Schema(
       type: Date,
       default: null,
     },
+    images: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Image',
+      },
+    ],
     likedImages: [
       {
         type: mongoose.Schema.Types.ObjectId,

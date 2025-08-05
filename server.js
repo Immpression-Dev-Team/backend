@@ -53,11 +53,10 @@ const corsOrigins = [
 // Create an Express application
 const app = express();
 
-app.use((req, res, next) => {
-  console.log(`Incoming request: ${req.method} ${req.url}`);
-  console.log(`Origin: ${req.headers.origin}`);
-  next();
-});
+// app.use((req, res, next) => {
+//   // console.log(`Incoming request: ${req.method} ${req.url}`);
+//   next();
+// });
 
 // Middleware to parse JSON bodies in incoming requests
 app.use(express.json());
