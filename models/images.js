@@ -107,7 +107,7 @@ const ImageSchema = new Schema(
     rejectionMessage: {
       type: String,
       default: "",
-    },    
+    }, 
   },
   { timestamps: true }
 );

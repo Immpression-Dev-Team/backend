@@ -2,6 +2,22 @@ import mongoose from "mongoose";
 
 const { Schema } = mongoose;
 
+export const SHIPMENT_STATUS = {
+  PENDING: "pending",
+  PROCESSING: "processing", 
+  SHIPPED: "shipped",
+  IN_TRANSIT: "in_transit",
+  OUT_FOR_DELIVERY: "out_for_delivery",
+  DELIVERED: "delivered",
+  EXCEPTION: "exception",
+  RETURNED: "returned"
+};
+
+const SHIPMENT_STATUS_ENUM = {
+  values: Object.values(SHIPMENT_STATUS),
+  message: 'Shipment status should be one of the predefined values'
+}
+
 const OrderSchema = new Schema(
   {
     imageId: {
@@ -73,6 +89,57 @@ const OrderSchema = new Schema(
     transactionId: {
       type: String,
     },
+        // Shipping and tracking fields
+    shipping: {
+      trackingNumber: {
+        type: String,
+        trim: true,
+        uppercase: true
+      },
+      carrier: {
+        type: String,
+        enum: {
+          values: [
+            'USPS', 'UPS', 'FedEx', 'DHL', 'CanadaPost', 
+            'RoyalMail', 'AustraliaPost', 'LaPoste', 'DeutschePost'
+          ],
+          message: 'Carrier must be a supported shipping provider'
+        }
+      },
+      shipmentStatus: {
+        type: String,
+        enum: SHIPMENT_STATUS_ENUM,
+        default: SHIPMENT_STATUS.PENDING
+      },
+      shippedAt: { type: Date },
+      estimatedDelivery: { type: Date },
+      
+      // EasyPost specific fields
+      easypostTrackerId: { type: String }, // EasyPost tracker ID
+      trackingDetails: {
+        type: mongoose.Schema.Types.Mixed, // Store full EasyPost tracking response
+        default: {}
+      },
+      
+      // Shipping address
+      shippingAddress: {
+        name: { type: String },
+        street1: { type: String },
+        street2: { type: String },
+        city: { type: String },
+        state: { type: String },
+        zip: { type: String },
+        country: { type: String, default: 'US' }
+      },
+      
+      // Additional tracking info
+      trackingEvents: [{
+        status: String,
+        message: String,
+        datetime: Date,
+        location: String
+      }]
+    }
   },
   { timestamps: true }
 );

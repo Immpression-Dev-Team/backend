@@ -737,22 +737,6 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
     return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
-router.post("/image/:id/ship", isUserAuthorized, async (req, res) => {
-  const { trackingNumber, carrier } = req.body;
-  const order = await OrderModel.findById(req.params.id);
-  if (!order) return res.status(404).json({ message: "Order not found" });
-
-  order.trackingNumber = trackingNumber;
-  order.carrier = carrier;
-  order.shipmentStatus = "Shipped";
-  await order.save();
-
-  // Create Shippo tracking
-  const shippo = require('shippo')(process.env.SHIPPO_API_KEY);
-  const tracking = await shippo.track.create(carrier, trackingNumber);
-
-  res.json({ message: "Tracking info added", tracking });
-});
 
 
 // Exporting the router as the default export
