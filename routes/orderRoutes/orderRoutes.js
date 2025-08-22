@@ -1,11 +1,13 @@
 import express from "express";
-import OrderModel from "../../models/orders.js";
+import OrderModel, {SHIPMENT_STATUS} from "../../models/orders.js";
 import UserModel from "../../models/users.js";
 import { isUserAuthorized } from "../../utils/authUtils.js";
+import EasyPost from '@easypost/api';
+
 
 import Stripe from "stripe";
 
-const stripe = Stripe(process.env.STRIPE_TEST_KEY);
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 const router = express.Router();
 import jwt from "jsonwebtoken";
@@ -559,6 +561,60 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Internal Server Error",
+    });
+  }
+});
+
+// PATCH /order/:id/tracking  -> updates tracking number on an existing order
+router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { trackingNumber, carrier } = req.body;
+
+    if (!trackingNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "trackingNumber is required",
+      });
+    }
+
+    const order = await OrderModel.findById(id);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    // Ensure shipping object exists
+    if (!order.shipping) order.shipping = {};
+
+    // Update fields
+    order.shipping.trackingNumber = trackingNumber;
+    if (carrier) order.shipping.carrier = carrier;
+
+    // Optionally bump status if you want to reflect shipment started
+    // (only set if not already delivered/returned/etc.)
+    if (!order.shipping.shipmentStatus) {
+      order.shipping.shipmentStatus = SHIPMENT_STATUS.SHIPPED;
+      order.shipping.shippedAt = new Date();
+    }
+
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Tracking number updated",
+      data: {
+        orderId: order._id,
+        shipping: order.shipping,
+      },
+    });
+  } catch (error) {
+    console.error("Error updating tracking number:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
     });
   }
 });

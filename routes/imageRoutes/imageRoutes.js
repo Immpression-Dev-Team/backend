@@ -739,6 +739,5 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
 });
 
 
-
 // Exporting the router as the default export
 export default router;
