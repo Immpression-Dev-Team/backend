@@ -565,215 +565,57 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
   }
 });
 
-router.post("/order/:id/ship", isUserAuthorized, async (req, res) => {
+// PATCH /order/:id/tracking  -> updates tracking number on an existing order
+router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
   try {
-    const { trackingNumber, carrier, shippingAddress } = req.body;
-    
-    // Validate required fields
-    if (!trackingNumber || !carrier) {
-      return res.status(400).json({ 
-        message: "Tracking number and carrier are required" 
+    const { id } = req.params;
+    const { trackingNumber, carrier } = req.body;
+
+    if (!trackingNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "trackingNumber is required",
       });
     }
 
-    // Find the image/order
-    const order = await OrderModel.findById(req.params.id);
+    const order = await OrderModel.findById(id);
     if (!order) {
-      return res.status(404).json({ message: "Order/Order not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
     }
 
-    // Create EasyPost tracker
-    const tracker = await easypost.Tracker.create({
-      tracking_code: trackingNumber,
-      carrier: carrier.toLowerCase()
-    });
+    // Ensure shipping object exists
+    if (!order.shipping) order.shipping = {};
 
-    // Update the image with shipping information
-    order.shipping = {
-      ...order.shipping,
-      trackingNumber: trackingNumber,
-      carrier: carrier,
-      shipmentStatus: SHIPMENT_STATUS.SHIPPED,
-      shippedAt: new Date(),
-      easypostTrackerId: tracker.id,
-      trackingDetails: tracker,
-      shippingAddress: shippingAddress || order.shipping?.shippingAddress
-    };
+    // Update fields
+    order.shipping.trackingNumber = trackingNumber;
+    if (carrier) order.shipping.carrier = carrier;
 
-    await irder.save();
-
-    res.json({ 
-      message: "Shipping info added successfully", 
-      tracking: {
-        trackingNumber: trackingNumber,
-        carrier: carrier,
-        status: tracker.status,
-        easypostId: tracker.id,
-        publicUrl: tracker.public_url
-      }
-    });
-
-  } catch (error) {
-    console.error('EasyPost tracking error:', error);
-    res.status(500).json({ 
-      message: "Failed to create tracking", 
-      error: error.message 
-    });
-  }
-});
-
-// Get tracking information for an image
-router.get("/order/:id/tracking", isUserAuthorized, async (req, res) => {
-  try {
-    const order = await OrderModel.findById(req.params.id);
-    if (!order) {
-      return res.status(404).json({ message: "Order/Order not found" });
-    }
-
-    if (!order.shipping?.easypostTrackerId) {
-      return res.status(404).json({ message: "No tracking information available" });
-    }
-
-    // Retrieve updated tracking info from EasyPost
-    const tracker = await easypost.Tracker.retrieve(order.shipping.easypostTrackerId);
-    
-    // Update local tracking data
-    order.shipping.trackingDetails = tracker;
-    order.shipping.shipmentStatus = mapEasyPostStatus(tracker.status);
-    
-    // Update tracking events
-    if (tracker.tracking_details && tracker.tracking_details.length > 0) {
-      order.shipping.trackingEvents = tracker.tracking_details.map(event => ({
-        status: event.status,
-        message: event.message,
-        datetime: new Date(event.datetime),
-        location: event.tracking_location ? 
-          `${event.tracking_location.city}, ${event.tracking_location.state}` : ''
-      }));
+    // Optionally bump status if you want to reflect shipment started
+    // (only set if not already delivered/returned/etc.)
+    if (!order.shipping.shipmentStatus) {
+      order.shipping.shipmentStatus = SHIPMENT_STATUS.SHIPPED;
+      order.shipping.shippedAt = new Date();
     }
 
     await order.save();
 
-    res.json({
-      trackingNumber: order.shipping.trackingNumber,
-      carrier: order.shipping.carrier,
-      status: tracker.status,
-      estimatedDelivery: tracker.est_delivery_date,
-      publicUrl: tracker.public_url,
-      trackingEvents: order.shipping.trackingEvents,
-      lastUpdated: tracker.updated_at
+    return res.status(200).json({
+      success: true,
+      message: "Tracking number updated",
+      data: {
+        orderId: order._id,
+        shipping: order.shipping,
+      },
     });
-
   } catch (error) {
-    console.error('Tracking retrieval error:', error);
-    res.status(500).json({ 
-      message: "Failed to retrieve tracking information", 
-      error: error.message 
+    console.error("Error updating tracking number:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
     });
-  }
-});
-
-// Webhook endpoint to receive tracking updates from EasyPost
-router.post("/webhook/easypost/tracking", async (req, res) => {
-  try {
-    const event = req.body;
-    
-    // Verify webhook signature (recommended for production)
-    // const signature = req.headers['x-easypost-hmac-signature'];
-    // if (!verifyWebhookSignature(req.body, signature)) {
-    //   return res.status(401).json({ message: "Invalid signature" });
-    // }
-
-    if (event.object === 'Event' && event.description.includes('tracker.updated')) {
-      const tracker = event.result;
-      
-      // Find image by EasyPost tracker ID
-      const order = await OrderModel.findOne({ 
-        'shipping.easypostTrackerId': tracker.id 
-      });
-      
-      if (order) {
-        // Update tracking information
-        order.shipping.trackingDetails = tracker;
-        order.shipping.shipmentStatus = mapEasyPostStatus(tracker.status);
-        
-        // Update tracking events
-        if (tracker.tracking_details && tracker.tracking_details.length > 0) {
-          order.shipping.trackingEvents = tracker.tracking_details.map(event => ({
-            status: event.status,
-            message: event.message,
-            datetime: new Date(event.datetime),
-            location: event.tracking_location ? 
-              `${event.tracking_location.city}, ${event.tracking_location.state}` : ''
-          }));
-        }
-        
-        await order.save();
-        
-        // You could emit socket events here to notify users in real-time
-        // io.emit(`tracking-update-${image._id}`, image.shipping);
-      }
-    }
-
-    res.status(200).json({ message: "Webhook processed" });
-  } catch (error) {
-    console.error('Webhook processing error:', error);
-    res.status(500).json({ message: "Webhook processing failed" });
-  }
-});
-
-// Helper function to map EasyPost status to your internal status
-function mapEasyPostStatus(easypostStatus) {
-  const statusMap = {
-    'pre_transit': SHIPMENT_STATUS.PROCESSING,
-    'in_transit': SHIPMENT_STATUS.IN_TRANSIT,
-    'out_for_delivery': SHIPMENT_STATUS.OUT_FOR_DELIVERY,
-    'delivered': SHIPMENT_STATUS.DELIVERED,
-    'available_for_pickup': SHIPMENT_STATUS.OUT_FOR_DELIVERY,
-    'return_to_sender': SHIPMENT_STATUS.RETURNED,
-    'failure': SHIPMENT_STATUS.EXCEPTION,
-    'cancelled': SHIPMENT_STATUS.EXCEPTION,
-    'error': SHIPMENT_STATUS.EXCEPTION
-  };
-  
-  return statusMap[easypostStatus] || SHIPMENT_STATUS.IN_TRANSIT;
-}
-
-// Bulk tracking update (useful for batch processing)
-router.post("/admin/tracking/bulk-update", isUserAuthorized, async (req, res) => {
-  try {
-    const orders = await OrderModel.find({
-      'shipping.easypostTrackerId': { $exists: true },
-      'shipping.shipmentStatus': { 
-        $nin: [SHIPMENT_STATUS.DELIVERED, SHIPMENT_STATUS.RETURNED, SHIPMENT_STATUS.EXCEPTION] 
-      }
-    });
-
-    const updatePromises = orders.map(async (order) => {
-      try {
-        const tracker = await easypost.Tracker.retrieve(order.shipping.easypostTrackerId);
-        order.shipping.trackingDetails = tracker;
-        order.shipping.shipmentStatus = mapEasyPostStatus(tracker.status);
-        return order.save();
-      } catch (error) {
-        console.error(`Failed to update tracking for image ${order._id}:`, error);
-        return null;
-      }
-    });
-
-    const results = await Promise.allSettled(updatePromises);
-    const successful = results.filter(r => r.status === 'fulfilled' && r.value).length;
-    
-    res.json({
-      message: `Bulk tracking update completed`,
-      total: orders.length,
-      successful: successful,
-      failed: orders.length - successful
-    });
-
-  } catch (error) {
-    console.error('Bulk tracking update error:', error);
-    res.status(500).json({ message: "Bulk update failed", error: error.message });
   }
 });
 
