@@ -1,7 +1,7 @@
 import express from "express";
 import OrderModel, {SHIPMENT_STATUS} from "../../models/orders.js";
 import UserModel from "../../models/users.js";
-import { isUserAuthorized } from "../../utils/authUtils.js";
+import { isUserAuthorized, isAdminAuthorized } from "../../utils/authUtils.js";
 import EasyPost from '@easypost/api';
 
 
@@ -615,6 +615,33 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Internal Server Error",
+    });
+  }
+});
+
+router.delete("/order/:id", isAdminAuthorized, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const order = await OrderModel.findById(id);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: "Order not found",
+      });
+    }
+
+    await OrderModel.findByIdAndDelete(id);
+
+    res.status(200).json({
+      success: true,
+      message: "Order deleted successfully",
+    });
+  } catch (error) {
+    console.error("Error deleting order:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal Server Error",
     });
   }
 });
