@@ -52,7 +52,7 @@ const corsOrigins = [
   "http://localhost:5173", // Admin Locally
   "http://localhost:3000", // Admin Locally
   "https://immpression-admin.vercel.app", // Admin Online
-  "https://immpression.art" // Website
+  "https://www.immpression.art" // Website
 ];
 
 // Create an Express application
