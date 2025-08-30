@@ -17,18 +17,18 @@ import authRoutes from "./routes/userAuthRoutes/userAuthRoutes.js";
 import imageRoutes from "./routes/imageRoutes/imageRoutes.js";
 
 // Import order handling routes
-import orderRoutes from "./routes/orderRoutes/orderRoutes.js"; // New import
+import orderRoutes from "./routes/orderRoutes/orderRoutes.js";
 
-// Import admin authentication routes
+// Import admin authentication/protected routes
 import adminAuthRoutes from "./routes/admin-userAuthRoutes/admin-userAuthRoutes.js";
 
-// Import admin-protected routes
-import adminRoutes from "./routes/admin-userAuthRoutes/admin-userAuthRoutes.js";
+// Import the new web donations routes (platform-only)
+import webDonationsRoutes from "./routes/webDonationsRoutes/webDonationsRoutes.js";
 
 // Import the MongoDB connection URL from config file
 import { MONGO_URL } from "./config/config.js";
 
-// Import body-parser
+// Import body-parser (only for urlencoded forms)
 import bodyParser from "body-parser";
 
 // Import cors
@@ -36,6 +36,9 @@ import cors from "cors";
 
 // Import dotenv
 import dotenv from "dotenv";
+
+// JWT for refresh endpoint
+import jwt from "jsonwebtoken";
 
 // Load environment variables
 dotenv.config();
@@ -47,20 +50,31 @@ const corsOrigins = [
   `http://${process.env.HOST_IP}:19000`, // Expo Go
   `http://${process.env.HOST_IP}:8081`, // Expo Development Build
   "http://localhost:5173", // Admin Locally
+  "http://localhost:3000", // Admin Locally
   "https://immpression-admin.vercel.app", // Admin Online
 ];
 
 // Create an Express application
 const app = express();
 
+// Simple request logger (in addition to morgan) for quick visibility
 app.use((req, res, next) => {
   console.log(`Incoming request: ${req.method} ${req.url}`);
   console.log(`Origin: ${req.headers.origin}`);
   next();
 });
 
-// Middleware to parse JSON bodies in incoming requests
-app.use(express.json());
+/**
+ * Keep Stripe donations webhook RAW:
+ * We skip global JSON parsing only for /api/web/donations/webhook
+ * because the donations router uses express.raw() on that path.
+ */
+app.use((req, res, next) => {
+  if (req.originalUrl === "/api/web/donations/webhook") {
+    return next(); // route-level express.raw() will handle it
+  }
+  return express.json()(req, res, next); // global JSON for everything else
+});
 
 // Middleware to parse cookies in incoming requests
 app.use(cookieParser());
@@ -87,8 +101,13 @@ const customFormat =
 // Use Morgan middleware to log HTTP requests with the defined custom format
 app.use(morgan(customFormat));
 
-import jwt from "jsonwebtoken";
+/**
+ * Optional: URL-encoded forms (if you need them elsewhere).
+ * Do NOT add another JSON parser here—already handled above.
+ */
+app.use(bodyParser.urlencoded({ extended: false }));
 
+// ----- Auth token refresh -----
 app.post("/refresh-token", (req, res) => {
   const { token: oldToken } = req.body;
 
@@ -109,41 +128,26 @@ app.post("/refresh-token", (req, res) => {
   });
 });
 
-// Use authentication routes for root path
+// ----- Routes -----
+// User auth / images / orders on root
 app.use("/", authRoutes);
-
-// Use image routes for root path
 app.use("/", imageRoutes);
+app.use("/", orderRoutes);
 
-// Use order routes for root path
-app.use("/", orderRoutes); // New route for orders
-
-// Use admin authentication routes
+// Admin routes
 app.use("/api/admin", adminAuthRoutes);
 
-// Use admin protected routes
-app.use("/api/admin", adminRoutes);
+// Web donations (platform-only; includes /donations/create-checkout-session and /donations/webhook)
+app.use("/api/web", webDonationsRoutes);
 
-// Middleware to parse URL-encoded bodies in incoming requests
-app.use(bodyParser.urlencoded({ extended: false }));
-
-// Middleware to parse JSON bodies in incoming requests
-app.use(bodyParser.json());
-
-// Define the server port number
+// ----- Database connection -----
 const PORT = process.env.BACKEND_PORT || 4000;
 
-// Connect to MongoDB using Mongoose
 mongoose
-  // Connect to MongoDB using the provided URL
   .connect(MONGO_URL)
-  // Log successful connection
   .then(() => console.log("MongoDB connection successful"))
-  // Handle connection errors
   .catch((error) => {
-    // Log the error
     console.error("Error connecting to MongoDB:", error);
-    // Exit the process with an error code
     process.exit(1);
   });
 
@@ -152,7 +156,7 @@ app.get("/", (req, res) => {
   res.send({ status: "Server is running" });
 });
 
-// Start the server and listen on the defined port
+// Start the server
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
