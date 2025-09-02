@@ -1,8 +1,9 @@
 import express from "express";
 import OrderModel, {SHIPMENT_STATUS} from "../../models/orders.js";
+import ImageModel from "../../models/images.js";
 import UserModel from "../../models/users.js";
 import { isUserAuthorized, isAdminAuthorized } from "../../utils/authUtils.js";
-import EasyPost from '@easypost/api';
+import axios from 'axios';
 
 
 import Stripe from "stripe";
@@ -11,6 +12,34 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 const router = express.Router();
 import jwt from "jsonwebtoken";
+
+// Map AfterShip statuses → your SHIPMENT_STATUS enum
+const mapStatus = (s) => {
+  switch ((s || "").toLowerCase()) {
+    case "pending":
+    case "info_received":
+    case "inforeceived":
+    case "pre_transit":        return SHIPMENT_STATUS.SHIPPED;
+    case "in_transit":         return SHIPMENT_STATUS.IN_TRANSIT;
+    case "out_for_delivery":   return SHIPMENT_STATUS.OUT_FOR_DELIVERY;
+    case "delivered":          return SHIPMENT_STATUS.DELIVERED;
+    case "available_for_pickup":
+    case "exception":
+    case "failed_attempt":
+    case "return_to_sender":   return SHIPMENT_STATUS.EXCEPTION;
+    default:                   return SHIPMENT_STATUS.SHIPPED;
+  }
+};
+
+// Normalize common slugs (your schema stores TitleCase carriers)
+const toTitleCaseCarrier = (slugOrName) => {
+  const s = String(slugOrName || "").toLowerCase();
+  if (s.includes("usps")) return "USPS";
+  if (s.includes("ups")) return "UPS";
+  if (s.includes("fedex")) return "FedEx";
+  if (s.includes("dhl")) return "DHL";
+  return slugOrName || "USPS";
+};
 
 router.get("/orderDetails/:id", async (req, res) => {
   try {
@@ -38,35 +67,42 @@ router.post("/order", isUserAuthorized, async (req, res) => {
   try {
     const { imageId, artName, artistName, price, imageLink, deliveryDetails } = req.body;
 
-    // Validate input
     if (!imageId || !artName || !artistName || !price || !deliveryDetails) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing required order fields.",
-      });
+      return res.status(400).json({ success: false, error: "Missing required order fields." });
     }
 
-    // Lookup the artist by name (or however you're tracking artists)
-    // const artist = await UserModel.findOne({ name: artistName });
+    // 🔎 Get the image & seller (artist)
+    const image = await ImageModel.findById(imageId).lean();
+    if (!image) {
+      return res.status(404).json({ success: false, error: "Image not found." });
+    }
 
-    // if (!artist || !artist.stripeAccountId) {
-    //   return res.status(400).json({
-    //     success: false,
-    //     error: "Artist not found or not connected to Stripe.",
-    //   });
-    // }
+    // Assuming the image doc has the owner at image.userId (change if yours is different)
+    const artistUserId = image.userId;
+    if (!artistUserId) {
+      return res.status(400).json({ success: false, error: "Image has no associated artist." });
+    }
 
-    // Create the order
+    // Get artist’s Stripe connect account (if you store it on the user)
+    const artist = await UserModel.findById(artistUserId).lean();
+    if (!artist || !artist.stripeAccountId) {
+      return res.status(400).json({ success: false, error: "Artist not connected to Stripe." });
+    }
+
     const newOrder = new OrderModel({
       imageId,
       artName,
       artistName,
       price,
-      artistStripeId: "abc123", // from UserModel
-      imageLink, // if you want to save image link
+      imageLink,
       deliveryDetails,
       userAccountName: req.user.name,
       userId: req.user._id,
+
+      // ✅ these two fields satisfy your schema validation
+      artistUserId,                      // required in your schema
+      artistStripeId: artist.stripeAccountId,
+
       status: "pending",
     });
 
@@ -76,16 +112,14 @@ router.post("/order", isUserAuthorized, async (req, res) => {
       success: true,
       message: "Order created successfully.",
       order: newOrder,
-      orderId: newOrder._id, // make sure frontend receives this
+      orderId: newOrder._id,
     });
   } catch (error) {
     console.error("Error creating order:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal Server Error",
-    });
+    res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
+
 
 router.post("/calculate-tax", async (req, res) => {
   try {
@@ -511,6 +545,45 @@ router.get("/orders", async (req, res) => {
   }
 });
 
+router.get("/my-orders", isUserAuthorized, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const orders = await OrderModel.find({ userId: req.user._id })
+      .populate("imageId", "imageLink")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalOrders = await OrderModel.countDocuments({ userId: req.user._id });
+
+    const enrichedOrders = orders.map((order) => {
+      const plain = order.toObject();
+      plain.imageLink = order.imageId?.imageLink || "https://via.placeholder.com/50";
+      return plain;
+    });
+
+    res.status(200).json({
+      success: true,
+      data: enrichedOrders,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalOrders / limit),
+        totalOrders,
+        limit,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching user orders:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal Server Error",
+    });
+  }
+});
+
 
 router.put("/order/:id", isUserAuthorized, async (req, res) => {
   try {
@@ -565,57 +638,103 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
   }
 });
 
-// PATCH /order/:id/tracking  -> updates tracking number on an existing order
+// PATCH /order/:id/tracking -> verify with AfterShip, then save
 router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
   try {
     const { id } = req.params;
     const { trackingNumber, carrier } = req.body;
 
-    if (!trackingNumber) {
-      return res.status(400).json({
-        success: false,
-        message: "trackingNumber is required",
-      });
+    if (!trackingNumber?.trim()) {
+      return res.status(400).json({ success: false, message: "trackingNumber is required" });
     }
 
     const order = await OrderModel.findById(id);
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: "Order not found",
-      });
+    if (!order) return res.status(404).json({ success: false, message: "Order not found" });
+
+    // 1) Create/Upsert tracking in AfterShip (this validates the number)
+    let created;
+    try {
+      created = await axios.post(
+        "https://api.aftership.com/v4/trackings",
+        {
+          tracking: {
+            tracking_number: trackingNumber.trim(),
+            ...(carrier ? { slug: String(carrier).toLowerCase() } : {}),
+          },
+        },
+        {
+          headers: {
+            "aftership-api-key": process.env.AFTERSHIP_API_KEY,
+            "Content-Type": "application/json",
+          },
+          validateStatus: () => true,
+        }
+      );
+
+      if (created.status === 409) {
+        // already exists
+      } else if (created.status >= 400) {
+        const msg =
+          created.data?.meta?.message ||
+          created.data?.meta?.error?.type ||
+          "Invalid or unsupported tracking number.";
+        return res.status(400).json({ success: false, message: msg });
+      }
+    } catch (e) {
+      return res.status(400).json({ success: false, message: "Tracking validation failed." });
     }
 
-    // Ensure shipping object exists
+    // 2) Fetch current tracking details
+    const slugForGet = (carrier ? String(carrier).toLowerCase() : "auto");
+    const fetched = await axios.get(
+      `https://api.aftership.com/v4/trackings/${slugForGet}/${encodeURIComponent(
+        trackingNumber.trim()
+      )}`,
+      { headers: { "aftership-api-key": process.env.AFTERSHIP_API_KEY } }
+    );
+
+    const t = fetched.data?.data?.tracking;
+    if (!t) {
+      return res.status(400).json({ success: false, message: "Unable to retrieve tracking details." });
+    }
+
+    const status = mapStatus(t.tag || t.subtag || t.status);
+    const titleCarrier = toTitleCaseCarrier(t.slug || carrier);
+
+    // 3) Update order
     if (!order.shipping) order.shipping = {};
 
-    // Update fields
-    order.shipping.trackingNumber = trackingNumber;
-    if (carrier) order.shipping.carrier = carrier;
+    order.shipping.trackingNumber = trackingNumber.trim().toUpperCase();
+    order.shipping.carrier = titleCarrier;
+    order.shipping.shipmentStatus = status;
+    order.shipping.shippedAt = order.shipping.shippedAt || new Date();
+    order.shipping.aftershipTrackingId = t.id;
 
-    // Optionally bump status if you want to reflect shipment started
-    // (only set if not already delivered/returned/etc.)
-    if (!order.shipping.shipmentStatus) {
-      order.shipping.shipmentStatus = SHIPMENT_STATUS.SHIPPED;
-      order.shipping.shippedAt = new Date();
+    // Events (AfterShip calls them checkpoints)
+    const checkpoints = Array.isArray(t.checkpoints) ? t.checkpoints : [];
+    order.shipping.trackingEvents = checkpoints.map((c) => ({
+      status: String(c.tag || c.subtag || c.status || "").toLowerCase(),
+      message: c.message || c.checkpoint_message,
+      datetime: c.checkpoint_time ? new Date(c.checkpoint_time) : undefined,
+      location: [c.city, c.state, c.country_name].filter(Boolean).join(", "),
+    }));
+
+    order.shipping.verified = order.shipping.verified || checkpoints.length > 0;
+
+    if (status === SHIPMENT_STATUS.DELIVERED && !order.shipping.deliveredAt) {
+      order.shipping.deliveredAt = new Date();
     }
 
     await order.save();
 
     return res.status(200).json({
       success: true,
-      message: "Tracking number updated",
-      data: {
-        orderId: order._id,
-        shipping: order.shipping,
-      },
+      message: "Tracking saved and verified with AfterShip.",
+      data: { orderId: order._id, shipping: order.shipping },
     });
   } catch (error) {
-    console.error("Error updating tracking number:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Internal Server Error",
-    });
+    console.error("Error verifying/saving tracking:", error);
+    return res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 });
 
