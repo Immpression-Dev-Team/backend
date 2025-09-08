@@ -1,10 +1,10 @@
 import express from "express";
-import OrderModel, {SHIPMENT_STATUS} from "../../models/orders.js";
+import OrderModel, { SHIPMENT_STATUS } from "../../models/orders.js";
 import ImageModel from "../../models/images.js";
 import UserModel from "../../models/users.js";
 import { isUserAuthorized, isAdminAuthorized } from "../../utils/authUtils.js";
 import axios from 'axios';
-
+import Notification, { NOTIFICATION_TYPE } from "../../models/notifications.js";
 
 import Stripe from "stripe";
 
@@ -19,15 +19,15 @@ const mapStatus = (s) => {
     case "pending":
     case "info_received":
     case "inforeceived":
-    case "pre_transit":        return SHIPMENT_STATUS.SHIPPED;
-    case "in_transit":         return SHIPMENT_STATUS.IN_TRANSIT;
-    case "out_for_delivery":   return SHIPMENT_STATUS.OUT_FOR_DELIVERY;
-    case "delivered":          return SHIPMENT_STATUS.DELIVERED;
+    case "pre_transit": return SHIPMENT_STATUS.SHIPPED;
+    case "in_transit": return SHIPMENT_STATUS.IN_TRANSIT;
+    case "out_for_delivery": return SHIPMENT_STATUS.OUT_FOR_DELIVERY;
+    case "delivered": return SHIPMENT_STATUS.DELIVERED;
     case "available_for_pickup":
     case "exception":
     case "failed_attempt":
-    case "return_to_sender":   return SHIPMENT_STATUS.EXCEPTION;
-    default:                   return SHIPMENT_STATUS.SHIPPED;
+    case "return_to_sender": return SHIPMENT_STATUS.EXCEPTION;
+    default: return SHIPMENT_STATUS.SHIPPED;
   }
 };
 
@@ -242,6 +242,18 @@ router.post("/order", isUserAuthorized, async (req, res) => {
     });
 
     await newOrder.save();
+
+    // Fire notification to the seller (artist)
+    Notification.create({
+      recipientUserId: artistUserId,     // seller
+      actorUserId: req.user._id,         // buyer
+      type: NOTIFICATION_TYPE.DELIVERY_DETAILS_SUBMITTED,
+      title: "New order started",
+      message: `A buyer submitted delivery details for “${artName}”.`,
+      orderId: newOrder._id,
+      imageId: imageId,
+      data: { artName, artistName, price, imageLink },
+    }).catch(err => console.error("Notif create error:", err));
 
     res.status(201).json({
       success: true,
@@ -531,6 +543,36 @@ router.post(
               paidAt: new Date(),
             }
           );
+          try {
+            const paidOrder = await OrderModel.findById(paymentIntent.metadata.orderId).lean();
+            if (paidOrder) {
+              // Create payment confirmation notification
+              await Notification.create({
+                recipientUserId: paidOrder.artistUserId,          // seller
+                actorUserId: paidOrder.userId,                    // buyer
+                type: NOTIFICATION_TYPE.ORDER_PAID,
+                title: "Payment received",
+                message: `Payment confirmed for "${paidOrder.artName}".`,
+                orderId: paidOrder._id,
+                imageId: paidOrder.imageId,
+                data: { artName: paidOrder.artName, price: paidOrder.price, imageLink: paidOrder.imageLink },
+              });
+              
+              // Create "needs shipping" notification
+              await Notification.create({
+                recipientUserId: paidOrder.artistUserId,          // seller
+                actorUserId: paidOrder.userId,                    // buyer
+                type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
+                title: "Action needed: Ship order",
+                message: `"${paidOrder.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
+                orderId: paidOrder._id,
+                imageId: paidOrder.imageId,
+                data: { artName: paidOrder.artName, price: paidOrder.price, imageLink: paidOrder.imageLink },
+              });
+            }
+          } catch (e) {
+            console.error("Notif create error (paid):", e);
+          }
           break;
 
         case "payment_intent.payment_failed":
@@ -786,7 +828,9 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
 
     const order = await OrderModel.findById(id);
     if (!order) return res.status(404).json({ success: false, message: "Order not found" });
-
+    if (String(order.artistUserId) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: "Not allowed to modify this order" });
+    }
     const carrierLc = String(carrier || "").toLowerCase();
 
     // === DIRECT UPS BRANCH ===
@@ -836,7 +880,36 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
           order.shipping.deliveredAt = new Date();
         }
 
+        if (status === SHIPMENT_STATUS.DELIVERED) {
+          Notification.create({
+            recipientUserId: order.userId,            // buyer
+            actorUserId: order.artistUserId,          // seller
+            type: NOTIFICATION_TYPE.ORDER_DELIVERED,
+            title: "Delivered",
+            message: `“${order.artName}” was delivered.`,
+            orderId: order._id,
+            imageId: order.imageId,
+            data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+          }).catch(err => console.error("Notif create error:", err));
+        }
+
         await order.save();
+
+        // Notify buyer: seller added tracking (order shipped/pre-transit)
+        Notification.create({
+          recipientUserId: order.userId,              // buyer
+          actorUserId: order.artistUserId,            // seller
+          type: NOTIFICATION_TYPE.ORDER_SHIPPED,
+          title: "Order shipped",
+          message: `Your “${order.artName}” has been shipped via ${order.shipping.carrier}.`,
+          orderId: order._id,
+          imageId: order.imageId,
+          data: {
+            artName: order.artName,
+            price: order.price,
+            imageLink: order.imageLink,
+          },
+        }).catch(err => console.error("Notif create error:", err));
 
         return res.status(200).json({
           success: true,
@@ -975,9 +1048,9 @@ router.get("/ups/ping", async (req, res) => {
 // List MY SALES (orders where I'm the seller/artist)
 router.get("/my-sales", isUserAuthorized, async (req, res) => {
   try {
-    const page  = Math.max(parseInt(req.query.page) || 1, 1);
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 100);
-    const skip  = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
     const statusFilter = (req.query.status || "").trim();
     const query = { artistUserId: req.user._id };

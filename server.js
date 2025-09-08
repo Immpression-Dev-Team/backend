@@ -25,6 +25,9 @@ import adminAuthRoutes from "./routes/admin-userAuthRoutes/admin-userAuthRoutes.
 // Import the new web donations routes (platform-only)
 import webDonationsRoutes from "./routes/webDonationsRoutes/webDonationsRoutes.js";
 
+// Notifications routes
+import notificationRoutes from "./routes/notificationRoutes/notificationRoutes.js";
+
 // Import the MongoDB connection URL from config file
 import { MONGO_URL } from "./config/config.js";
 
@@ -53,29 +56,33 @@ const corsOrigins = [
   "http://localhost:5173", // Admin Locally
   "http://localhost:3000", // Admin Locally
   "https://immpression-admin.vercel.app", // Admin Online
-  "https://www.immpression.art" // Website
+  "https://www.immpression.art", // Website
 ];
 
 // Create an Express application
 const app = express();
 
 // Simple request logger (in addition to morgan) for quick visibility
-app.use((req, res, next) => {
+app.use((req, _res, next) => {
   console.log(`Incoming request: ${req.method} ${req.url}`);
   console.log(`Origin: ${req.headers.origin}`);
   next();
 });
 
 /**
- * Keep Stripe donations webhook RAW:
- * We skip global JSON parsing only for /api/web/donations/webhook
- * because the donations router uses express.raw() on that path.
+ * Keep Stripe webhook bodies RAW where needed:
+ * - /api/web/donations/webhook  (handled inside webDonationsRoutes with express.raw)
+ * - /webhook                    (orders webhook defined inside orderRoutes)
+ *
+ * Everything else gets JSON parsing.
  */
 app.use((req, res, next) => {
-  if (req.originalUrl === "/api/web/donations/webhook") {
-    return next(); // route-level express.raw() will handle it
-  }
-  return express.json()(req, res, next); // global JSON for everything else
+  const rawPaths = new Set([
+    "/api/web/donations/webhook",
+    "/webhook",
+  ]);
+  if (rawPaths.has(req.originalUrl)) return next(); // route-level express.raw() will handle it
+  return express.json()(req, res, next);
 });
 
 // Middleware to parse cookies in incoming requests
@@ -136,6 +143,9 @@ app.use("/", authRoutes);
 app.use("/", imageRoutes);
 app.use("/", orderRoutes);
 
+// Notifications at /notifications (avoids clobbering "/")
+app.use("/notifications", notificationRoutes);
+
 // Admin routes
 app.use("/api/admin", adminAuthRoutes);
 
@@ -154,7 +164,7 @@ mongoose
   });
 
 // Default server route
-app.get("/", (req, res) => {
+app.get("/", (_req, res) => {
   res.send({ status: "Server is running" });
 });
 
