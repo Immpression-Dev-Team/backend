@@ -41,6 +41,141 @@ const toTitleCaseCarrier = (slugOrName) => {
   return slugOrName || "USPS";
 };
 
+// ===== UPS Direct Tracking (no AfterShip) =====
+
+// Choose base by env
+const upsBase = () =>
+  (process.env.UPS_ENV || "cie").toLowerCase() === "prod"
+    ? "https://onlinetools.ups.com"
+    : "https://wwwcie.ups.com";
+
+// Token cache
+let UPS_TOKEN = null;
+let UPS_TOKEN_EXP = 0;
+
+// Get OAuth token (client credentials), caches until ~60s before expiry
+async function getUpsToken() {
+  const now = Math.floor(Date.now() / 1000);
+  if (UPS_TOKEN && UPS_TOKEN_EXP - 60 > now) return UPS_TOKEN;
+
+  const url = `${upsBase()}/security/v1/oauth/token`;
+  const auth = Buffer.from(
+    `${process.env.UPS_CLIENT_ID}:${process.env.UPS_CLIENT_SECRET}`
+  ).toString("base64");
+
+  // IMPORTANT: include scope=tracking
+  const body = new URLSearchParams({
+    grant_type: "client_credentials",
+    scope: "tracking",
+  }).toString();
+
+  let resp;
+  try {
+    resp = await axios.post(url, body, {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${auth}`,
+        Accept: "application/json",
+      },
+      validateStatus: () => true,
+    });
+  } catch (e) {
+    console.error("UPS OAuth network error:", e?.message || e);
+    throw new Error("UPS OAuth request failed");
+  }
+
+  if (resp.status !== 200) {
+    console.error("UPS OAuth error:", {
+      status: resp.status,
+      data: resp.data,
+    });
+    throw new Error(
+      resp.data?.error_description ||
+      resp.data?.error ||
+      "UPS OAuth rejected credentials"
+    );
+  }
+
+  UPS_TOKEN = resp.data?.access_token;
+  const expiresIn = Number(resp.data?.expires_in || 0);
+  UPS_TOKEN_EXP = Math.floor(Date.now() / 1000) + (expiresIn || 1800);
+
+  return UPS_TOKEN;
+}
+
+// ---- add this helper near your UPS helpers ----
+function parseUpsDate(ymd, hms) {
+  const d = String(ymd || "").replace(/\D/g, "");
+  if (d.length !== 8) return undefined;
+
+  const y = Number(d.slice(0, 4));
+  const m = Number(d.slice(4, 6));   // 01..12
+  const day = Number(d.slice(6, 8)); // 01..31
+
+  let hh = 0, mm = 0, ss = 0;
+  const t = String(hms || "").replace(/\D/g, "");
+  if (t.length >= 2) hh = Number(t.slice(0, 2));
+  if (t.length >= 4) mm = Number(t.slice(2, 4));
+  if (t.length >= 6) ss = Number(t.slice(4, 6));
+
+  const jsDate = new Date(Date.UTC(y, m - 1, day, hh, mm, ss));
+  return isNaN(jsDate.getTime()) ? undefined : jsDate;
+}
+
+// Map UPS status → your enum
+function mapUpsStatus(upsStatusObj = {}) {
+  // UPS response often has currentStatus: { code, description }
+  const code = String(upsStatusObj.code || "").toUpperCase();
+  const desc = String(upsStatusObj.description || "").toLowerCase();
+
+  // Try code first, then fallback on description keywords
+  if (code === "D" || /delivered/.test(desc)) return SHIPMENT_STATUS.DELIVERED;
+  if (code === "O" || /out for delivery/.test(desc)) return SHIPMENT_STATUS.OUT_FOR_DELIVERY;
+  if (code === "I" || /in transit|arrived|departed|origin scan|destination scan/.test(desc))
+    return SHIPMENT_STATUS.IN_TRANSIT;
+  if (/exception|failed attempt|return to sender|hold/.test(desc))
+    return SHIPMENT_STATUS.EXCEPTION;
+
+  // Pre-transit / label created
+  if (/label created|information received|pre[- ]?transit|order processed/.test(desc))
+    return SHIPMENT_STATUS.SHIPPED;
+
+  return SHIPMENT_STATUS.SHIPPED;
+}
+
+// Fetch details from UPS Tracking API
+async function trackWithUPS(inquiryNumber) {
+  const token = await getUpsToken();
+  const transId = `${Date.now()}`;
+  const transactionSrc = process.env.UPS_TRANSACTION_SRC || "immpression";
+
+  const url = `${upsBase()}/api/track/v1/details/${encodeURIComponent(inquiryNumber)}`;
+  const resp = await axios.get(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      transId,
+      transactionSrc,
+      Accept: "application/json",
+    },
+    params: { locale: "en_US", returnSignature: "false" },
+    validateStatus: () => true,
+  });
+
+  if (resp.status >= 400) {
+    console.error("UPS Track error:", { status: resp.status, data: resp.data });
+    const msg =
+      resp.data?.response?.errors?.[0]?.message ||
+      resp.data?.response?.errors?.[0]?.code ||
+      resp.statusText ||
+      "UPS tracking failed";
+    const e = new Error(msg);
+    e.status = resp.status;
+    throw e;
+  }
+
+  return resp.data;
+}
+
 router.get("/orderDetails/:id", async (req, res) => {
   try {
     const order = await OrderModel.findById(req.params.id);
@@ -638,7 +773,7 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
   }
 });
 
-// PATCH /order/:id/tracking -> verify with AfterShip, then save
+// PATCH /order/:id/tracking
 router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
   try {
     const { id } = req.params;
@@ -647,18 +782,81 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     if (!trackingNumber?.trim()) {
       return res.status(400).json({ success: false, message: "trackingNumber is required" });
     }
+    const tn = trackingNumber.trim().toUpperCase();
 
     const order = await OrderModel.findById(id);
     if (!order) return res.status(404).json({ success: false, message: "Order not found" });
 
-    // 1) Create/Upsert tracking in AfterShip (this validates the number)
+    const carrierLc = String(carrier || "").toLowerCase();
+
+    // === DIRECT UPS BRANCH ===
+    if (carrierLc === "ups" || /^1Z[0-9A-Z]{16}$/.test(tn)) {
+      try {
+        const upsData = await trackWithUPS(tn);
+
+        // Typical structure: upsData.trackResponse.shipment[0].package[0]
+        const pkg = upsData?.trackResponse?.shipment?.[0]?.package?.[0];
+        if (!pkg) {
+          return res.status(400).json({ success: false, message: "UPS returned no package data." });
+        }
+
+        const currentStatus = pkg.currentStatus || {};
+        const status = mapUpsStatus(currentStatus);
+
+        // Map activities → trackingEvents (parse UPS date/time safely)
+        const activities = Array.isArray(pkg?.activity) ? pkg.activity : [];
+        const events = activities.map((a) => {
+          const dt = parseUpsDate(a?.date, a?.time); // <-- robust parsing
+          const locParts = [
+            a?.activityLocation?.address?.city,
+            a?.activityLocation?.address?.stateProvince,
+            a?.activityLocation?.address?.country
+          ].filter(Boolean);
+
+          const event = {
+            status: String(a?.status?.description || a?.activityLocation?.address?.city || "").toLowerCase(),
+            message: a?.status?.description || a?.activityScan || "",
+            location: locParts.join(", "),
+          };
+          if (dt) event.datetime = dt; // only include when valid
+          return event;
+        });
+
+        if (!order.shipping) order.shipping = {};
+        order.shipping.trackingNumber = tn;
+        order.shipping.carrier = "UPS";
+        order.shipping.shipmentStatus = status;
+        order.shipping.shippedAt = order.shipping.shippedAt || new Date();
+        // Filter any edge cases that might still have bad dates
+        order.shipping.trackingEvents = events.filter(
+          (e) => !("datetime" in e) || (e.datetime instanceof Date && !isNaN(e.datetime))
+        );
+        order.shipping.verified = order.shipping.verified || order.shipping.trackingEvents.length > 0;
+        if (status === SHIPMENT_STATUS.DELIVERED && !order.shipping.deliveredAt) {
+          order.shipping.deliveredAt = new Date();
+        }
+
+        await order.save();
+
+        return res.status(200).json({
+          success: true,
+          message: "Tracking saved and verified with UPS.",
+          data: { orderId: order._id, shipping: order.shipping },
+        });
+      } catch (e) {
+        const code = e.status || 400;
+        return res.status(code).json({ success: false, message: e.message || "UPS validation failed." });
+      }
+    }
+
+    // === FALLBACK (AfterShip) for non-UPS ===
     let created;
     try {
       created = await axios.post(
         "https://api.aftership.com/v4/trackings",
         {
           tracking: {
-            tracking_number: trackingNumber.trim(),
+            tracking_number: tn,
             ...(carrier ? { slug: String(carrier).toLowerCase() } : {}),
           },
         },
@@ -671,25 +869,20 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
         }
       );
 
-      if (created.status === 409) {
-        // already exists
-      } else if (created.status >= 400) {
+      if (created.status !== 409 && created.status >= 400) {
         const msg =
           created.data?.meta?.message ||
           created.data?.meta?.error?.type ||
           "Invalid or unsupported tracking number.";
         return res.status(400).json({ success: false, message: msg });
       }
-    } catch (e) {
+    } catch {
       return res.status(400).json({ success: false, message: "Tracking validation failed." });
     }
 
-    // 2) Fetch current tracking details
     const slugForGet = (carrier ? String(carrier).toLowerCase() : "auto");
     const fetched = await axios.get(
-      `https://api.aftership.com/v4/trackings/${slugForGet}/${encodeURIComponent(
-        trackingNumber.trim()
-      )}`,
+      `https://api.aftership.com/v4/trackings/${slugForGet}/${encodeURIComponent(tn)}`,
       { headers: { "aftership-api-key": process.env.AFTERSHIP_API_KEY } }
     );
 
@@ -701,26 +894,26 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     const status = mapStatus(t.tag || t.subtag || t.status);
     const titleCarrier = toTitleCaseCarrier(t.slug || carrier);
 
-    // 3) Update order
     if (!order.shipping) order.shipping = {};
-
-    order.shipping.trackingNumber = trackingNumber.trim().toUpperCase();
+    order.shipping.trackingNumber = tn;
     order.shipping.carrier = titleCarrier;
     order.shipping.shipmentStatus = status;
     order.shipping.shippedAt = order.shipping.shippedAt || new Date();
     order.shipping.aftershipTrackingId = t.id;
 
-    // Events (AfterShip calls them checkpoints)
     const checkpoints = Array.isArray(t.checkpoints) ? t.checkpoints : [];
-    order.shipping.trackingEvents = checkpoints.map((c) => ({
-      status: String(c.tag || c.subtag || c.status || "").toLowerCase(),
-      message: c.message || c.checkpoint_message,
-      datetime: c.checkpoint_time ? new Date(c.checkpoint_time) : undefined,
-      location: [c.city, c.state, c.country_name].filter(Boolean).join(", "),
-    }));
+    order.shipping.trackingEvents = checkpoints.map((c) => {
+      const dt = c.checkpoint_time ? new Date(c.checkpoint_time) : undefined;
+      const event = {
+        status: String(c.tag || c.subtag || c.status || "").toLowerCase(),
+        message: c.message || c.checkpoint_message,
+        location: [c.city, c.state, c.country_name].filter(Boolean).join(", "),
+      };
+      if (dt && !isNaN(dt)) event.datetime = dt;
+      return event;
+    });
 
-    order.shipping.verified = order.shipping.verified || checkpoints.length > 0;
-
+    order.shipping.verified = order.shipping.verified || order.shipping.trackingEvents.length > 0;
     if (status === SHIPMENT_STATUS.DELIVERED && !order.shipping.deliveredAt) {
       order.shipping.deliveredAt = new Date();
     }
@@ -729,7 +922,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: "Tracking saved and verified with AfterShip.",
+      message: "Tracking saved and verified.",
       data: { orderId: order._id, shipping: order.shipping },
     });
   } catch (error) {
@@ -737,6 +930,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     return res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 });
+
 
 router.delete("/order/:id", isAdminAuthorized, async (req, res) => {
   try {
@@ -764,5 +958,86 @@ router.delete("/order/:id", isAdminAuthorized, async (req, res) => {
     });
   }
 });
+
+router.get("/ups/ping", async (req, res) => {
+  try {
+    const token = await getUpsToken();
+    return res.json({
+      ok: true,
+      tokenPreview: token ? token.slice(0, 16) + "…" : null,
+      env: process.env.UPS_ENV,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// List MY SALES (orders where I'm the seller/artist)
+router.get("/my-sales", isUserAuthorized, async (req, res) => {
+  try {
+    const page  = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 100);
+    const skip  = (page - 1) * limit;
+
+    const statusFilter = (req.query.status || "").trim();
+    const query = { artistUserId: req.user._id };
+    if (statusFilter) {
+      query.$or = [
+        { status: new RegExp(`^${statusFilter}$`, "i") },
+        { "shipping.shipmentStatus": new RegExp(`^${statusFilter}$`, "i") }
+      ];
+    }
+
+    const sales = await OrderModel.find(query)
+      .populate("imageId", "imageLink")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const totalSales = await OrderModel.countDocuments(query);
+
+    const enriched = sales.map((o) => {
+      const shipping = o.shipping || {};
+      const buyerFriendly =
+        o.userAccountName ||
+        (o.userId && typeof o.userId === "object" && (o.userId.name || o.userId.userName)) ||
+        "Buyer";
+
+      return {
+        ...o,
+        imageLink: o.imageId?.imageLink || "https://via.placeholder.com/50",
+        buyerName: buyerFriendly,
+        // Normalize tracking info
+        tracking: {
+          trackingNumber: shipping.trackingNumber || null,
+          carrier: shipping.carrier || null,
+          shipmentStatus: shipping.shipmentStatus || o.status || "processing",
+          shippedAt: shipping.shippedAt || null,
+          deliveredAt: shipping.deliveredAt || null,
+          trackingEvents: shipping.trackingEvents || [], // full history if you saved it
+        },
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: enriched,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalSales / limit),
+        totalSales,
+        limit,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching my sales:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Internal Server Error",
+    });
+  }
+});
+
 
 export default router;
