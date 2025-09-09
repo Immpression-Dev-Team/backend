@@ -859,12 +859,24 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     // === DIRECT UPS BRANCH ===
     if (carrierLc === "ups" || /^1Z[0-9A-Z]{16}$/.test(tn)) {
       try {
-        // ---- MOCK: allow test numbers in any env when flag is set OR forceMock=1 ----
-        const allowMock = (process.env.UPS_ALLOW_TEST_NUMBERS || "").toLowerCase() === "true";
-        const forceMock = String(req.query.forceMock || "").trim() === "1";
-        let upsData;
+        // Only allow mock in NON-prod environments, and only when explicitly allowed or forced.
+        const isProd = (process.env.UPS_ENV || "cie").toLowerCase() === "prod";
+        const allowMock = !isProd && (process.env.UPS_ALLOW_TEST_NUMBERS || "").toLowerCase() === "true";
+        const forceMock = !isProd && String(req.query.forceMock || "").trim() === "1";
+        const usedMock = forceMock || (allowMock && isTestTrackingNumber(tn));
 
-        if (forceMock || (allowMock && isTestTrackingNumber(tn))) {
+        // (optional) debug
+        console.log("UPS tracking branch", {
+          tn,
+          isProd,
+          allowMock,
+          forceMock,
+          isTest: isTestTrackingNumber(tn),
+          usedMock
+        });
+
+        let upsData;
+        if (usedMock) {
           upsData = buildMockUpsTracking(tn);
         } else {
           upsData = await trackWithUPS(tn);
@@ -926,7 +938,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
 
         await order.save();
 
-        // Notify buyer: seller added tracking
+        // Notify buyer: seller added tracking (fire & forget)
         Notification.create({
           recipientUserId: order.userId,              // buyer
           actorUserId: order.artistUserId,            // seller
@@ -940,7 +952,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
 
         return res.status(200).json({
           success: true,
-          message: forceMock ? "Tracking saved (mock UPS data)." : "Tracking saved and verified with UPS.",
+          message: usedMock ? "Tracking saved (mock UPS data)." : "Tracking saved and verified with UPS.",
           data: { orderId: order._id, shipping: order.shipping },
         });
       } catch (e) {
@@ -1030,6 +1042,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     return res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 });
+
 
 
 router.delete("/order/:id", isAdminAuthorized, async (req, res) => {
