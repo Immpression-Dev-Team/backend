@@ -43,6 +43,67 @@ const toTitleCaseCarrier = (slugOrName) => {
 
 // ===== UPS Direct Tracking (no AfterShip) =====
 
+// ---- UPS test-number helpers (put near other UPS helpers) ----
+
+// Public UPS demo numbers (or add your own)
+const UPS_TEST_NUMBERS = new Set([
+  "1Z12345E0291980793",
+  "1Z12345E1512345676",
+  "1Z12345E6615272234",
+  "1Z12345E0205271688",
+  "1Z12345E1392654435",
+  "1Z12345E6892410846",
+]);
+
+function isTestTrackingNumber(tn) {
+  const s = String(tn || "").toUpperCase().replace(/\s+/g, "");
+  return UPS_TEST_NUMBERS.has(s);
+}
+
+function formatYMD(d) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}${m}${day}`; // UPS YYYYMMDD
+}
+
+function buildMockUpsTracking(tn) {
+  const now = new Date();
+  const tMinus = (days) => new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+
+  return {
+    trackResponse: {
+      shipment: [{
+        package: [{
+          trackingNumber: tn,
+          currentStatus: { code: "I", description: "In Transit" },
+          activity: [
+            {
+              date: formatYMD(tMinus(3)),
+              time: "083000",
+              status: { description: "Origin Scan" },
+              activityLocation: { address: { city: "New York", stateProvince: "NY", country: "US" } }
+            },
+            {
+              date: formatYMD(tMinus(1)),
+              time: "104500",
+              status: { description: "Departed UPS Facility" },
+              activityLocation: { address: { city: "Secaucus", stateProvince: "NJ", country: "US" } }
+            },
+            {
+              date: formatYMD(now),
+              time: "071500",
+              status: { description: "In Transit" },
+              activityLocation: { address: { city: "Philadelphia", stateProvince: "PA", country: "US" } }
+            }
+          ]
+        }]
+      }]
+    }
+  };
+}
+
+
 // Choose base by env
 const upsBase = () =>
   (process.env.UPS_ENV || "cie").toLowerCase() === "prod"
@@ -831,12 +892,22 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     if (String(order.artistUserId) !== String(req.user._id)) {
       return res.status(403).json({ success: false, message: "Not allowed to modify this order" });
     }
+
     const carrierLc = String(carrier || "").toLowerCase();
 
     // === DIRECT UPS BRANCH ===
     if (carrierLc === "ups" || /^1Z[0-9A-Z]{16}$/.test(tn)) {
       try {
-        const upsData = await trackWithUPS(tn);
+        // ---- MOCK: allow test numbers in any env when flag is set OR forceMock=1 ----
+        const allowMock = (process.env.UPS_ALLOW_TEST_NUMBERS || "").toLowerCase() === "true";
+        const forceMock = String(req.query.forceMock || "").trim() === "1";
+        let upsData;
+
+        if (forceMock || (allowMock && isTestTrackingNumber(tn))) {
+          upsData = buildMockUpsTracking(tn);
+        } else {
+          upsData = await trackWithUPS(tn);
+        }
 
         // Typical structure: upsData.trackResponse.shipment[0].package[0]
         const pkg = upsData?.trackResponse?.shipment?.[0]?.package?.[0];
@@ -850,7 +921,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
         // Map activities → trackingEvents (parse UPS date/time safely)
         const activities = Array.isArray(pkg?.activity) ? pkg.activity : [];
         const events = activities.map((a) => {
-          const dt = parseUpsDate(a?.date, a?.time); // <-- robust parsing
+          const dt = parseUpsDate(a?.date, a?.time);
           const locParts = [
             a?.activityLocation?.address?.city,
             a?.activityLocation?.address?.stateProvince,
@@ -862,7 +933,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
             message: a?.status?.description || a?.activityScan || "",
             location: locParts.join(", "),
           };
-          if (dt) event.datetime = dt; // only include when valid
+          if (dt) event.datetime = dt;
           return event;
         });
 
@@ -871,7 +942,6 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
         order.shipping.carrier = "UPS";
         order.shipping.shipmentStatus = status;
         order.shipping.shippedAt = order.shipping.shippedAt || new Date();
-        // Filter any edge cases that might still have bad dates
         order.shipping.trackingEvents = events.filter(
           (e) => !("datetime" in e) || (e.datetime instanceof Date && !isNaN(e.datetime))
         );
@@ -895,7 +965,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
 
         await order.save();
 
-        // Notify buyer: seller added tracking (order shipped/pre-transit)
+        // Notify buyer: seller added tracking
         Notification.create({
           recipientUserId: order.userId,              // buyer
           actorUserId: order.artistUserId,            // seller
@@ -904,16 +974,12 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
           message: `Your “${order.artName}” has been shipped via ${order.shipping.carrier}.`,
           orderId: order._id,
           imageId: order.imageId,
-          data: {
-            artName: order.artName,
-            price: order.price,
-            imageLink: order.imageLink,
-          },
+          data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
         }).catch(err => console.error("Notif create error:", err));
 
         return res.status(200).json({
           success: true,
-          message: "Tracking saved and verified with UPS.",
+          message: forceMock ? "Tracking saved (mock UPS data)." : "Tracking saved and verified with UPS.",
           data: { orderId: order._id, shipping: order.shipping },
         });
       } catch (e) {
@@ -1081,14 +1147,14 @@ router.get("/my-sales", isUserAuthorized, async (req, res) => {
         ...o,
         imageLink: o.imageId?.imageLink || "https://via.placeholder.com/50",
         buyerName: buyerFriendly,
-        // Normalize tracking info
+        // normalized tracking info for the UI
         tracking: {
           trackingNumber: shipping.trackingNumber || null,
           carrier: shipping.carrier || null,
           shipmentStatus: shipping.shipmentStatus || o.status || "processing",
           shippedAt: shipping.shippedAt || null,
           deliveredAt: shipping.deliveredAt || null,
-          trackingEvents: shipping.trackingEvents || [], // full history if you saved it
+          trackingEvents: shipping.trackingEvents || [],
         },
       };
     });
