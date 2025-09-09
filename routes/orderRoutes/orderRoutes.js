@@ -31,6 +31,11 @@ const mapStatus = (s) => {
   }
 };
 
+function getAuthToken(req) {
+  const bearer = req.headers.authorization?.split(" ")[1];
+  return bearer || req.cookies?.["auth-token"] || null;
+}
+
 // Normalize common slugs (your schema stores TitleCase carriers)
 const toTitleCaseCarrier = (slugOrName) => {
   const s = String(slugOrName || "").toLowerCase();
@@ -423,44 +428,25 @@ router.post("/payout", async (req, res) => {
 
 router.post("/create-stripe-account", async (req, res) => {
   try {
-    // Step 1: Get and verify JWT token
-    const token = req.cookies["auth-token"];
-    if (!token) {
-      return res
-        .status(401)
-        .json({ success: false, message: "No token found" });
-    }
+    const rawToken = getAuthToken(req);
+    if (!rawToken) return res.status(401).json({ success: false, message: "No token found" });
 
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (err) {
-      return res
-        .status(401)
-        .json({ success: false, message: "Invalid or expired token" });
+      decoded = jwt.verify(rawToken, process.env.JWT_SECRET);
+    } catch {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
     }
 
-    const userId = decoded._id;
+    const user = await UserModel.findById(decoded._id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    // Step 2: Fetch user from DB
-    const user = await UserModel.findById(userId);
-    if (!user) {
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
-    }
-
-    // Step 3: If Stripe account exists, create new onboarding link
+    // If Stripe account exists, make a fresh onboarding link
     if (user.stripeAccountId) {
-      // Create new onboarding link for existing account
       const accountLink = await stripe.accountLinks.create({
         account: user.stripeAccountId,
-        refresh_url:
-          process.env.STRIPE_REFRESH_URL ||
-          "https://immpression.com/stripe/reauth",
-        return_url:
-          process.env.STRIPE_RETURN_URL ||
-          "https://immpression.com/stripe/success",
+        refresh_url: process.env.STRIPE_REFRESH_URL || "https://immpression.com/stripe/reauth",
+        return_url: process.env.STRIPE_RETURN_URL || "https://immpression.com/stripe/success",
         type: "account_onboarding",
       });
 
@@ -477,40 +463,27 @@ router.post("/create-stripe-account", async (req, res) => {
       });
     }
 
-    // Step 4: Create Stripe account
+    // Create account then link
     const account = await stripe.accounts.create({
       type: "express",
       country: "US",
       email: user.email,
       business_type: "individual",
-      capabilities: {
-        card_payments: { requested: true },
-        transfers: { requested: true },
-      },
-      metadata: {
-        app_user_id: user._id.toString(),
-        username: user.userName || "NoName",
-      },
+      capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
+      metadata: { app_user_id: String(user._id), username: user.userName || "NoName" },
     });
 
-    // Step 5: Create onboarding link
     const accountLink = await stripe.accountLinks.create({
       account: account.id,
-      refresh_url:
-        process.env.STRIPE_REFRESH_URL ||
-        "https://immpression.com/stripe/reauth",
-      return_url:
-        process.env.STRIPE_RETURN_URL ||
-        "https://immpression.com/stripe/success",
+      refresh_url: process.env.STRIPE_REFRESH_URL || "https://immpression.com/stripe/reauth",
+      return_url: process.env.STRIPE_RETURN_URL || "https://immpression.com/stripe/success",
       type: "account_onboarding",
     });
 
-    // Step 6: Save Stripe account ID to user
     user.stripeAccountId = account.id;
     await user.save();
 
-    // Step 7: Respond
-    const responseData = {
+    return res.status(200).json({
       success: true,
       data: accountLink,
       user: {
@@ -520,34 +493,13 @@ router.post("/create-stripe-account", async (req, res) => {
         stripeOnboardingCompleted: user.stripeOnboardingCompleted,
       },
       message: "Stripe account created and onboarding link generated",
-    };
-
-    console.log("✅ Sending response to frontend:", {
-      success: responseData.success,
-      message: responseData.message,
-      accountLinkUrl: responseData.data?.url,
-      stripeAccountId: responseData.user?.stripeAccountId,
     });
-
-    res.status(200).json(responseData);
   } catch (error) {
     console.error("❌ Error creating Stripe account:", error);
-    console.error("❌ Error details:", {
-      message: error.message,
-      stack: error.stack,
-      name: error.name,
-    });
-
-    const errorResponse = {
-      success: false,
-      message: "Stripe account creation failed",
-      error: error.message,
-    };
-
-    console.log("❌ Sending error response to frontend:", errorResponse);
-    res.status(500).json(errorResponse);
+    return res.status(500).json({ success: false, message: "Stripe account creation failed", error: error.message });
   }
 });
+
 
 // router.post("/createStripeOnboardingLink", async (req, res) => {
 //   console.log("----------------------------->>>>>>> ", req.body.stripeConnectId);
@@ -577,146 +529,160 @@ router.post(
   express.raw({ type: "application/json" }),
   async (req, res) => {
     const sig = req.headers["stripe-signature"];
-    let event;
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET; // looks like: whsec_...
 
+    let event;
     try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_TEST_KEY
-      );
+      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
     } catch (err) {
-      console.error("Webhook signature verification failed:", err.message);
+      console.error("❌ Webhook signature verification failed:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
+    // Optional: idempotency guard if you store processed event IDs
+    // const already = await WebhookEventModel.findOne({ eventId: event.id });
+    // if (already) return res.json({ received: true });
+
     try {
       switch (event.type) {
-        case "payment_intent.succeeded":
-          const paymentIntent = event.data.object;
-          // Update order status to paid
-          await OrderModel.findOneAndUpdate(
-            { _id: paymentIntent.metadata.orderId },
-            {
-              status: "paid",
-              paymentStatus: "paid",
-              paymentIntentId: paymentIntent.id,
-              paidAt: new Date(),
+        case "payment_intent.succeeded": {
+          const pi = event.data.object; // PaymentIntent
+          const orderId = pi.metadata?.orderId;
+
+          if (orderId) {
+            await OrderModel.findOneAndUpdate(
+              { _id: orderId },
+              {
+                status: "paid",
+                paymentStatus: "paid",
+                paymentIntentId: pi.id,
+                paidAt: new Date(),
+              }
+            );
+
+            try {
+              const paidOrder = await OrderModel.findById(orderId).lean();
+              if (paidOrder) {
+                // Notify seller: payment received
+                await Notification.create({
+                  recipientUserId: paidOrder.artistUserId, // seller
+                  actorUserId: paidOrder.userId,           // buyer
+                  type: NOTIFICATION_TYPE.ORDER_PAID,
+                  title: "Payment received",
+                  message: `Payment confirmed for "${paidOrder.artName}".`,
+                  orderId: paidOrder._id,
+                  imageId: paidOrder.imageId,
+                  data: {
+                    artName: paidOrder.artName,
+                    price: paidOrder.price,
+                    imageLink: paidOrder.imageLink,
+                  },
+                });
+
+                // Notify seller: needs shipping
+                await Notification.create({
+                  recipientUserId: paidOrder.artistUserId, // seller
+                  actorUserId: paidOrder.userId,           // buyer
+                  type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
+                  title: "Action needed: Ship order",
+                  message: `"${paidOrder.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
+                  orderId: paidOrder._id,
+                  imageId: paidOrder.imageId,
+                  data: {
+                    artName: paidOrder.artName,
+                    price: paidOrder.price,
+                    imageLink: paidOrder.imageLink,
+                  },
+                });
+              }
+            } catch (nErr) {
+              console.error("⚠️ Notification create error (paid):", nErr);
             }
-          );
-          try {
-            const paidOrder = await OrderModel.findById(paymentIntent.metadata.orderId).lean();
-            if (paidOrder) {
-              // Create payment confirmation notification
-              await Notification.create({
-                recipientUserId: paidOrder.artistUserId,          // seller
-                actorUserId: paidOrder.userId,                    // buyer
-                type: NOTIFICATION_TYPE.ORDER_PAID,
-                title: "Payment received",
-                message: `Payment confirmed for "${paidOrder.artName}".`,
-                orderId: paidOrder._id,
-                imageId: paidOrder.imageId,
-                data: { artName: paidOrder.artName, price: paidOrder.price, imageLink: paidOrder.imageLink },
-              });
-              
-              // Create "needs shipping" notification
-              await Notification.create({
-                recipientUserId: paidOrder.artistUserId,          // seller
-                actorUserId: paidOrder.userId,                    // buyer
-                type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
-                title: "Action needed: Ship order",
-                message: `"${paidOrder.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
-                orderId: paidOrder._id,
-                imageId: paidOrder.imageId,
-                data: { artName: paidOrder.artName, price: paidOrder.price, imageLink: paidOrder.imageLink },
-              });
-            }
-          } catch (e) {
-            console.error("Notif create error (paid):", e);
           }
           break;
+        }
 
-        case "payment_intent.payment_failed":
-          const failedPayment = event.data.object;
-          // Update order status to failed
-          await OrderModel.findOneAndUpdate(
-            { _id: failedPayment.metadata.orderId },
-            {
-              status: "failed",
-              paymentStatus: "failed",
-              paymentIntentId: failedPayment.id,
-              failureReason: failedPayment.last_payment_error?.message,
-            }
-          );
+        case "payment_intent.payment_failed": {
+          const pi = event.data.object; // PaymentIntent
+          const orderId = pi.metadata?.orderId;
+
+          if (orderId) {
+            await OrderModel.findOneAndUpdate(
+              { _id: orderId },
+              {
+                status: "failed",
+                paymentStatus: "failed",
+                paymentIntentId: pi.id,
+                failureReason: pi.last_payment_error?.message,
+              }
+            );
+          }
           break;
+        }
 
-        case "charge.refunded":
-          const refund = event.data.object;
-          // Update order status to refunded
-          await OrderModel.findOneAndUpdate(
-            { paymentIntentId: refund.payment_intent },
-            {
-              status: "refunded",
-              paymentStatus: "refunded",
-              refundedAt: new Date(),
-            }
-          );
+        case "charge.refunded": {
+          const charge = event.data.object; // Charge
+          const paymentIntentId = charge.payment_intent;
+
+          if (paymentIntentId) {
+            await OrderModel.findOneAndUpdate(
+              { paymentIntentId },
+              {
+                status: "refunded",
+                paymentStatus: "refunded",
+                refundedAt: new Date(),
+              }
+            );
+          }
+          break;
+        }
+
+        // You can handle more event types here if needed:
+        // case "account.updated":
+        // case "payout.paid":
+        // ...
+
+        default:
+          // For unhandled events, just acknowledge
           break;
       }
 
-      res.json({ received: true });
-    } catch (error) {
-      console.error("Error processing webhook:", error);
-      res.status(500).json({ error: "Webhook processing failed" });
+      // Optional: record processed event ID for idempotency
+      // await WebhookEventModel.create({ eventId: event.id, type: event.type });
+
+      return res.json({ received: true });
+    } catch (err) {
+      console.error("❌ Error processing webhook:", err);
+      return res.status(500).json({ error: "Webhook processing failed" });
     }
   }
 );
 
 router.post("/check-stripe-status", async (req, res) => {
   try {
-    const token = req.cookies["auth-token"];
-    if (!token)
-      return res
-        .status(401)
-        .json({ success: false, message: "No token found" });
+    const rawToken = getAuthToken(req);
+    if (!rawToken) return res.status(401).json({ success:false, message:"No token found" });
 
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(rawToken, process.env.JWT_SECRET);
     } catch {
-      return res
-        .status(401)
-        .json({ success: false, message: "Invalid or expired token" });
+      return res.status(401).json({ success:false, message:"Invalid or expired token" });
     }
 
     const user = await UserModel.findById(decoded._id);
     if (!user || !user.stripeAccountId) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "No Stripe account found for this user",
-        });
+      return res.status(400).json({ success:false, message:"No Stripe account found for this user" });
     }
 
     const account = await stripe.accounts.retrieve(user.stripeAccountId);
-
-    const {
-      id: stripeAccountId,
-      details_submitted,
-      charges_enabled,
-      payouts_enabled,
-      requirements = {},
-    } = account;
-
+    const { id: stripeAccountId, details_submitted, charges_enabled, payouts_enabled, requirements = {} } = account;
     const { currently_due = [], disabled_reason } = requirements;
 
-    // Update onboarding status if completed
     if (details_submitted && !user.stripeOnboardingCompleted) {
       user.stripeOnboardingCompleted = true;
       user.stripeOnboardingCompletedAt = new Date();
       await user.save();
-      console.log("✅ User onboarding completed:", user.email);
     }
 
     return res.status(200).json({
@@ -728,20 +694,15 @@ router.post("/check-stripe-status", async (req, res) => {
         charges_enabled,
         payouts_enabled,
         onboarding_completed: user.stripeOnboardingCompleted,
-        requirements: {
-          currently_due,
-          disabled_reason,
-        },
+        requirements: { currently_due, disabled_reason },
       },
     });
   } catch (error) {
     console.error("❌ Error checking Stripe account status:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to check Stripe account status",
-    });
+    return res.status(500).json({ success:false, message:"Failed to check Stripe account status" });
   }
 });
+
 
 router.get("/orders", async (req, res) => {
   try {
