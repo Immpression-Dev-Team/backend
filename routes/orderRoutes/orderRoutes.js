@@ -242,6 +242,148 @@ async function trackWithUPS(inquiryNumber) {
   return resp.data;
 }
 
+// Choose FedEx base by env
+const fedexBase = () =>
+  (process.env.FEDEX_ENV || "sandbox").toLowerCase() === "production"
+    ? "https://apis.fedex.com"
+    : "https://apis-sandbox.fedex.com";
+
+// Token cache
+let FEDEX_TOKEN = null;
+let FEDEX_TOKEN_EXP = 0;
+
+// Get FedEx OAuth token (client_credentials)
+async function getFedexToken() {
+  const now = Math.floor(Date.now() / 1000);
+  if (FEDEX_TOKEN && FEDEX_TOKEN_EXP - 60 > now) return FEDEX_TOKEN;
+
+  const env = String(process.env.FEDEX_ENV || "sandbox").trim().toLowerCase();
+  const clientId = (process.env.FEDEX_CLIENT_ID || "").trim();
+  const clientSecret = (process.env.FEDEX_CLIENT_SECRET || "").trim();
+
+  if (!clientId || !clientSecret) {
+    throw new Error("FedEx OAuth: missing FEDEX_CLIENT_ID / FEDEX_CLIENT_SECRET");
+  }
+
+  const url = `${fedexBase()}/oauth/token`;
+  const form = new URLSearchParams({
+    grant_type: "client_credentials",
+    client_id: clientId,
+    client_secret: clientSecret,
+    // Some tenants require scope; harmless if ignored:
+    // scope: "oob"
+  }).toString();
+
+  // Also send Basic auth just in case tenant expects it
+  const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+
+  let resp;
+  try {
+    resp = await axios.post(url, form, {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "Authorization": `Basic ${basic}`, // extra redundancy
+      },
+      validateStatus: () => true,
+    });
+  } catch (e) {
+    console.error("FedEx OAuth network error:", e?.message || e);
+    throw new Error("FedEx OAuth request failed");
+  }
+
+  if (resp.status !== 200) {
+    const firstErr = (resp?.data?.errors && resp.data.errors[0]) || {};
+    console.error("FedEx OAuth error:", {
+      status: resp.status,
+      env,
+      base: fedexBase(),
+      clientId_preview: clientId.slice(0, 4) + "…" + clientId.slice(-4),
+      data: resp.data,
+    });
+    throw new Error(
+      firstErr?.message ||
+      firstErr?.code ||
+      resp?.data?.error_description ||
+      resp?.data?.error ||
+      `FedEx OAuth rejected credentials (status ${resp.status})`
+    );
+  }
+
+  FEDEX_TOKEN = resp.data?.access_token;
+  const expiresIn = Number(resp.data?.expires_in || 0);
+  FEDEX_TOKEN_EXP = Math.floor(Date.now() / 1000) + (expiresIn || 1800);
+
+  return FEDEX_TOKEN;
+}
+
+
+// Map FedEx status → your enum
+function mapFedexStatus(obj = {}) {
+  const raw = String(
+    obj?.description ||
+    obj?.statusByLocale ||
+    obj?.code ||
+    obj
+  ).toLowerCase();
+
+  if (/delivered/.test(raw)) return SHIPMENT_STATUS.DELIVERED;
+  if (/out for delivery/.test(raw)) return SHIPMENT_STATUS.OUT_FOR_DELIVERY;
+  if (/in transit|on its way|departed|arrived|at fedex location|at local facility/.test(raw))
+    return SHIPMENT_STATUS.IN_TRANSIT;
+  if (/exception|failed|delivery exception|hold|return/.test(raw))
+    return SHIPMENT_STATUS.EXCEPTION;
+
+  if (/label created|shipment information sent|picked up|pre[- ]?transit|order processed/.test(raw))
+    return SHIPMENT_STATUS.SHIPPED;
+
+  return SHIPMENT_STATUS.SHIPPED;
+}
+
+// Parse FedEx scan date/time (already ISO in most responses)
+function parseFedexDate(iso) {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+
+// Call FedEx Track API
+async function trackWithFedex(trackingNumber) {
+  const token = await getFedexToken();
+  const url = `${fedexBase()}/track/v1/trackingnumbers`;
+
+  const payload = {
+    includeDetailedScans: true,
+    trackingInfo: [
+      {
+        trackingNumberInfo: { trackingNumber },
+      },
+    ],
+  };
+
+  const resp = await axios.post(url, payload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    validateStatus: () => true,
+  });
+
+  if (resp.status >= 400) {
+    console.error("FedEx Track error:", { status: resp.status, data: resp.data });
+    const msg =
+      resp.data?.errors?.[0]?.message ||
+      resp.data?.errors?.[0]?.code ||
+      resp.statusText ||
+      "FedEx tracking failed";
+    const e = new Error(msg);
+    e.status = resp.status;
+    throw e;
+  }
+
+  return resp.data;
+}
+
 router.get("/orderDetails/:id", async (req, res) => {
   try {
     const order = await OrderModel.findById(req.params.id);
@@ -837,7 +979,8 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
   }
 });
 
-// PATCH /order/:id/tracking
+
+// ======================= FULL ENDPOINT: PATCH /order/:id/tracking ========================
 router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
   try {
     const { id } = req.params;
@@ -856,42 +999,22 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
 
     const carrierLc = String(carrier || "").toLowerCase();
 
-    // === DIRECT UPS BRANCH ===
+    // ======== UPS BRANCH (direct API, mock allowed in non-prod for test numbers) ========
     if (carrierLc === "ups" || /^1Z[0-9A-Z]{16}$/.test(tn)) {
       try {
-        // Only allow mock in NON-prod environments, and only when explicitly allowed or forced.
         const isProd = (process.env.UPS_ENV || "cie").toLowerCase() === "prod";
         const allowMock = !isProd && (process.env.UPS_ALLOW_TEST_NUMBERS || "").toLowerCase() === "true";
         const forceMock = !isProd && String(req.query.forceMock || "").trim() === "1";
         const usedMock = forceMock || (allowMock && isTestTrackingNumber(tn));
 
-        // (optional) debug
-        console.log("UPS tracking branch", {
-          tn,
-          isProd,
-          allowMock,
-          forceMock,
-          isTest: isTestTrackingNumber(tn),
-          usedMock
-        });
+        let upsData = usedMock ? buildMockUpsTracking(tn) : await trackWithUPS(tn);
 
-        let upsData;
-        if (usedMock) {
-          upsData = buildMockUpsTracking(tn);
-        } else {
-          upsData = await trackWithUPS(tn);
-        }
-
-        // Typical structure: upsData.trackResponse.shipment[0].package[0]
         const pkg = upsData?.trackResponse?.shipment?.[0]?.package?.[0];
         if (!pkg) {
           return res.status(400).json({ success: false, message: "UPS returned no package data." });
         }
 
-        const currentStatus = pkg.currentStatus || {};
-        const status = mapUpsStatus(currentStatus);
-
-        // Map activities → trackingEvents (parse UPS date/time safely)
+        const status = mapUpsStatus(pkg.currentStatus || {});
         const activities = Array.isArray(pkg?.activity) ? pkg.activity : [];
         const events = activities.map((a) => {
           const dt = parseUpsDate(a?.date, a?.time);
@@ -925,8 +1048,8 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
 
         if (status === SHIPMENT_STATUS.DELIVERED) {
           Notification.create({
-            recipientUserId: order.userId,            // buyer
-            actorUserId: order.artistUserId,          // seller
+            recipientUserId: order.userId,
+            actorUserId: order.artistUserId,
             type: NOTIFICATION_TYPE.ORDER_DELIVERED,
             title: "Delivered",
             message: `“${order.artName}” was delivered.`,
@@ -938,10 +1061,9 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
 
         await order.save();
 
-        // Notify buyer: seller added tracking (fire & forget)
         Notification.create({
-          recipientUserId: order.userId,              // buyer
-          actorUserId: order.artistUserId,            // seller
+          recipientUserId: order.userId,
+          actorUserId: order.artistUserId,
           type: NOTIFICATION_TYPE.ORDER_SHIPPED,
           title: "Order shipped",
           message: `Your “${order.artName}” has been shipped via ${order.shipping.carrier}.`,
@@ -961,7 +1083,96 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
       }
     }
 
-    // === FALLBACK (AfterShip) for non-UPS ===
+    // =============================== FEDEX BRANCH (direct API) ===============================
+    if (carrierLc === "fedex") {
+      try {
+        const fedex = await trackWithFedex(tn);
+
+        // Navigate common FedEx schema:
+        // data.output.completeTrackResults[0].trackResults[0]
+        const root = fedex?.output?.completeTrackResults?.[0]?.trackResults?.[0];
+        if (!root) {
+          return res.status(400).json({ success: false, message: "FedEx returned no track results." });
+        }
+
+        const latest = root?.latestStatusDetail || {};
+        const status = mapFedexStatus(latest);
+
+        const scans = Array.isArray(root?.scanEvents) ? root.scanEvents : [];
+        const events = scans.map((ev) => {
+          const dt = parseFedexDate(ev?.date || ev?.dateTime || ev?.eventDateTime);
+          const addr = ev?.scanLocation || ev?.scanLocation?.address || ev?.location || {};
+          const locParts = [
+            addr?.city,
+            addr?.stateOrProvinceCode,
+            addr?.countryCode || addr?.countryName,
+          ].filter(Boolean);
+
+          const event = {
+            status: String(ev?.eventDescription || ev?.derivedStatus || "").toLowerCase(),
+            message: ev?.eventDescription || ev?.derivedStatus || latest?.description || "",
+            location: locParts.join(", "),
+          };
+          if (dt) event.datetime = dt;
+          return event;
+        });
+
+        if (!order.shipping) order.shipping = {};
+        order.shipping.trackingNumber = tn;
+        order.shipping.carrier = "FedEx";
+        order.shipping.shipmentStatus = status;
+        order.shipping.shippedAt = order.shipping.shippedAt || new Date();
+        order.shipping.trackingEvents = events.filter(
+          (e) => !("datetime" in e) || (e.datetime instanceof Date && !isNaN(e.datetime))
+        );
+        order.shipping.verified = order.shipping.verified || order.shipping.trackingEvents.length > 0;
+
+        // delivered time if present
+        if (status === SHIPMENT_STATUS.DELIVERED && !order.shipping.deliveredAt) {
+          const deliveredScan = scans.find(s => /delivered/i.test(s?.eventDescription || ""));
+          order.shipping.deliveredAt = deliveredScan
+            ? parseFedexDate(deliveredScan?.date || deliveredScan?.dateTime || deliveredScan?.eventDateTime) || new Date()
+            : new Date();
+        }
+
+        if (status === SHIPMENT_STATUS.DELIVERED) {
+          Notification.create({
+            recipientUserId: order.userId,
+            actorUserId: order.artistUserId,
+            type: NOTIFICATION_TYPE.ORDER_DELIVERED,
+            title: "Delivered",
+            message: `“${order.artName}” was delivered.`,
+            orderId: order._id,
+            imageId: order.imageId,
+            data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+          }).catch(err => console.error("Notif create error:", err));
+        }
+
+        await order.save();
+
+        Notification.create({
+          recipientUserId: order.userId,
+          actorUserId: order.artistUserId,
+          type: NOTIFICATION_TYPE.ORDER_SHIPPED,
+          title: "Order shipped",
+          message: `Your “${order.artName}” has been shipped via ${order.shipping.carrier}.`,
+          orderId: order._id,
+          imageId: order.imageId,
+          data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+        }).catch(err => console.error("Notif create error:", err));
+
+        return res.status(200).json({
+          success: true,
+          message: "Tracking saved and verified with FedEx.",
+          data: { orderId: order._id, shipping: order.shipping },
+        });
+      } catch (e) {
+        const code = e.status || 400;
+        return res.status(code).json({ success: false, message: e.message || "FedEx validation failed." });
+      }
+    }
+
+    // ============================ AFTERSHIP FALLBACK (USPS/DHL/etc.) ============================
     let created;
     try {
       created = await axios.post(
@@ -1042,6 +1253,8 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     return res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 });
+// =========================================================================================
+
 
 
 
@@ -1084,6 +1297,16 @@ router.get("/ups/ping", async (req, res) => {
     return res.status(500).json({ ok: false, error: e.message });
   }
 });
+
+router.get("/fedex/ping", async (req, res) => {
+  try {
+    const token = await getFedexToken();
+    res.json({ ok: true, tokenPreview: token ? token.slice(0, 16) + "…" : null, env: process.env.FEDEX_ENV });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 
 // List MY SALES (orders where I'm the seller/artist)
 router.get("/my-sales", isUserAuthorized, async (req, res) => {
