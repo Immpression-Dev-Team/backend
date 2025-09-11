@@ -47,6 +47,9 @@ cloudinary.v2.config({
   api_secret: process.env.CLOUDINARY_SECRET,
 });
 
+// helper
+const isValidUSZip = (z) => /^\d{5}(-\d{4})?$/.test(z || '');
+
 // Create a new Express router
 const router = express.Router();
 
@@ -275,7 +278,7 @@ router.post('/logout', (request, response) => {
   }
 });
 
-// Endpoint to get the user's profile
+// --- in /get-profile include zipcode ---
 router.get('/get-profile', isUserAuthorized, async (request, response) => {
   try {
     const userId = request.user._id;
@@ -284,13 +287,11 @@ router.get('/get-profile', isUserAuthorized, async (request, response) => {
       'email',
       'views',
       'isGoogleUser',
-    ]); // Add isGoogleUser
+      'zipcode',            // ✅ include
+    ]);
 
     if (!user) {
-      return response.status(404).json({
-        success: false,
-        error: 'User not found',
-      });
+      return response.status(404).json({ success: false, error: 'User not found' });
     }
 
     response.status(200).json({
@@ -299,15 +300,13 @@ router.get('/get-profile', isUserAuthorized, async (request, response) => {
         name: user.name,
         email: user.email,
         views: user.views,
-        isGoogleUser: user.isGoogleUser, // Include in response
+        isGoogleUser: user.isGoogleUser,
+        zipcode: user.zipcode,   // ✅ include
       },
     });
   } catch (error) {
     console.error('Error fetching profile:', error);
-    response.status(500).json({
-      success: false,
-      error: 'Internal Server Error',
-    });
+    response.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
 
@@ -803,11 +802,14 @@ router.delete('/delete-account', isUserAuthorized, async (req, res) => {
   }
 });
 
-// Route to update user profile fields
+// PUT /update-profile
+// Updates allowed profile fields with validation + uniqueness checks
 router.put('/update-profile', isUserAuthorized, async (req, res) => {
   try {
     const userId = req.user._id;
     const updates = req.body;
+
+    // Only allow these fields
     const allowedUpdates = [
       'name',
       'email',
@@ -816,42 +818,40 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
       'accountType',
       'artCategories',
       'profilePictureLink',
+      'zipcode', // ✅ newly allowed
     ];
 
-    const isValidOperation = Object.keys(updates).every((update) =>
-      allowedUpdates.includes(update)
+    // Validate allowed fields
+    const isValidOperation = Object.keys(updates).every((k) =>
+      allowedUpdates.includes(k)
     );
-
     if (!isValidOperation) {
       return res.status(400).json({
         success: false,
         error:
-          'Invalid updates! Only name, email, bio, artistType, accountType, artCategories, and profilePictureLink can be updated',
+          'Invalid updates! Only name, email, bio, artistType, accountType, artCategories, profilePictureLink, and zipcode can be updated',
       });
     }
 
-    // Special handling for email update
+    // ---- Field-level validations ----
+    // Email format + uniqueness
     if (updates.email) {
       const emailRegex = /^\w+(\.\w+)*@\w+([\-]?\w+)*(\.\w{2,3})+$/;
       if (!emailRegex.test(updates.email)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid email address format',
-        });
+        return res
+          .status(400)
+          .json({ success: false, error: 'Invalid email address format' });
       }
-
-      // Check if email already exists
-      const existingUser = await UserModel.findOne({ email: updates.email });
-      if (existingUser && existingUser._id.toString() !== userId) {
-        return res.status(400).json({
-          success: false,
-          error: 'Email already in use by another account',
-        });
+      const existing = await UserModel.findOne({ email: updates.email });
+      if (existing && existing._id.toString() !== userId.toString()) {
+        return res
+          .status(400)
+          .json({ success: false, error: 'Email already in use by another account' });
       }
     }
 
-    // Special handling for name update
-    if (updates.name) {
+    // Name length
+    if (typeof updates.name === 'string') {
       if (updates.name.length < 4 || updates.name.length > 30) {
         return res.status(400).json({
           success: false,
@@ -860,42 +860,60 @@ router.put('/update-profile', isUserAuthorized, async (req, res) => {
       }
     }
 
-    // Special handling for bio update
-    if (updates.bio && updates.bio.length > 500) {
+    // Bio length
+    if (typeof updates.bio === 'string' && updates.bio.length > 500) {
       return res.status(400).json({
         success: false,
         error: 'Bio must be less than 500 characters',
       });
     }
 
-    // Find and update user
+    // Zip code (US 5-digit or ZIP+4). Store as string to keep leading zeros.
+    if (typeof updates.zipcode === 'string') {
+      const zipOk = /^\d{5}(-\d{4})?$/.test(updates.zipcode);
+      if (!zipOk) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid ZIP. Use 5 digits or ZIP+4 (e.g., 94107 or 94107-1234).',
+        });
+      }
+      // sanitize (trim spaces)
+      updates.zipcode = updates.zipcode.trim();
+    }
+
+    // ---- Perform update ----
     const user = await UserModel.findByIdAndUpdate(userId, updates, {
       new: true,
       runValidators: true,
+      // select is ignored in findByIdAndUpdate options; we sanitize below
     }).select('-password -resetPasswordToken -resetPasswordExpires');
 
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found',
-      });
+      return res.status(404).json({ success: false, error: 'User not found' });
     }
+
+    // Sanitize response again (defense in depth)
+    const safeUser = user.toObject();
+    delete safeUser.password;
+    delete safeUser.resetPasswordToken;
+    delete safeUser.resetPasswordExpires;
 
     return res.status(200).json({
       success: true,
       message: 'Profile updated successfully',
-      user,
+      user: safeUser,
     });
   } catch (error) {
+    // Handle Mongoose validation errors cleanly
     if (error instanceof mongoose.Error.ValidationError) {
-      const messages = Object.values(error.errors).map((err) => err.message);
-      return res
-        .status(400)
-        .json({ success: false, error: messages.join(', ') });
+      const messages = Object.values(error.errors).map((e) => e.message);
+      return res.status(400).json({
+        success: false,
+        error: messages.join(', '),
+      });
     }
-
     console.error('Error updating profile:', error);
-    res.status(500).json({ success: false, error: 'Internal Server Error' });
+    return res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
 
@@ -1080,6 +1098,40 @@ router.get('/profile/:id', async (req, res) => {
   } catch (error) {
     console.error('Error fetching user profile by ID:', error);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// ✅ NEW: set/update zipcode
+router.put('/set-zipcode', isUserAuthorized, async (request, response) => {
+  try {
+    const { zipcode } = request.body;
+    const userId = request.user._id;
+
+    if (!zipcode || !isValidUSZip(zipcode)) {
+      return response.status(400).json({
+        success: false,
+        error: 'Invalid ZIP. Use 5 digits or ZIP+4 (e.g., 94107 or 94107-1234).',
+      });
+    }
+
+    const user = await UserModel.findByIdAndUpdate(
+      userId,
+      { zipcode },
+      { new: true, runValidators: true }
+    );
+
+    if (!user) {
+      return response.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    return response.status(200).json({
+      success: true,
+      message: 'Zip code updated successfully',
+      zipcode: user.zipcode,
+    });
+  } catch (error) {
+    console.error('Error updating zipcode:', error);
+    response.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
 
