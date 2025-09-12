@@ -209,6 +209,47 @@ function mapUpsStatus(upsStatusObj = {}) {
   return SHIPMENT_STATUS.SHIPPED;
 }
 
+// ===== UPS OAuth (multiple scopes) =====
+const UPS_TOKEN_CACHE = {}; // { scopeString: { token, exp } }
+
+async function getUpsTokenWithScopes(scopes = ["rating"]) {
+  const scopeKey = scopes.slice().sort().join(" ");
+  const cached = UPS_TOKEN_CACHE[scopeKey];
+  const now = Math.floor(Date.now() / 1000);
+  if (cached && cached.exp - 60 > now) return cached.token;
+
+  const url = `${upsBase()}/security/v1/oauth/token`;
+  const auth = Buffer.from(
+    `${process.env.UPS_CLIENT_ID}:${process.env.UPS_CLIENT_SECRET}`
+  ).toString("base64");
+
+  const body = new URLSearchParams({
+    grant_type: "client_credentials",
+    scope: scopeKey, // e.g. "rating" or "rating tracking"
+  }).toString();
+
+  const resp = await axios.post(url, body, {
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: `Basic ${auth}`,
+      Accept: "application/json",
+    },
+    validateStatus: () => true,
+  });
+
+  if (resp.status !== 200) {
+    throw new Error(
+      resp.data?.error_description || resp.data?.error || "UPS OAuth (rating) failed"
+    );
+  }
+
+  const token = resp.data?.access_token;
+  const exp = now + Number(resp.data?.expires_in || 1800);
+  UPS_TOKEN_CACHE[scopeKey] = { token, exp };
+  return token;
+}
+
+
 // Fetch details from UPS Tracking API
 async function trackWithUPS(inquiryNumber) {
   const token = await getUpsToken();
@@ -1372,6 +1413,396 @@ router.get("/my-sales", isUserAuthorized, async (req, res) => {
       success: false,
       error: "Internal Server Error",
     });
+  }
+});
+
+/**
+ * POST /shipping/ups-rates
+ * body: {
+ *   // One of:
+ *   artistUserId?: string,
+ *   shipFromZip?: string,
+ *
+ *   shipTo: { postalCode: string, countryCode?: "US", stateCode?: string, city?: string, residential?: boolean },
+ *   parcel: { weightLb: number, lengthIn: number, widthIn: number, heightIn: number },
+ *   serviceCodes?: string[] // optional filter, e.g. ["03","02"] (Ground, 2nd Day Air)
+ * }
+ */
+router.post("/shipping/ups-rates", async (req, res) => {
+  try {
+    const {
+      artistUserId,
+      shipFromZip,
+      shipTo = {},
+      parcel = {},
+      serviceCodes = []
+    } = req.body || {};
+
+    // 1) Resolve ship-from ZIP (from user.zipcode or raw shipFromZip)
+    let fromZip = String(shipFromZip || "").trim();
+    if (!fromZip && artistUserId) {
+      const seller = await UserModel.findById(artistUserId).lean();
+      if (!seller || !seller.zipcode) {
+        return res.status(400).json({ success: false, error: "Seller zipcode not found" });
+      }
+      fromZip = seller.zipcode;
+    }
+    if (!fromZip) {
+      return res.status(400).json({ success: false, error: "shipFromZip or artistUserId required" });
+    }
+
+    // 2) Basic validation for ship-to + parcel
+    const toZip = String(shipTo.postalCode || "").trim();
+    if (!toZip) return res.status(400).json({ success: false, error: "shipTo.postalCode required" });
+
+    const weight = Number(parcel.weightLb || 0);
+    const length = Number(parcel.lengthIn || 0);
+    const width  = Number(parcel.widthIn || 0);
+    const height = Number(parcel.heightIn || 0);
+    if (!(weight > 0 && length > 0 && width > 0 && height > 0)) {
+      return res.status(400).json({ success: false, error: "parcel must include positive weightLb, lengthIn, widthIn, heightIn" });
+    }
+
+    // 3) Build UPS Rating request (REST v2403)
+    const token = await getUpsTokenWithScopes(["rating"]); // important!
+
+    const apiBase = (process.env.UPS_ENV || "cie").toLowerCase() === "prod"
+      ? "https://onlinetools.ups.com"
+      : "https://wwwcie.ups.com";
+
+    // Optional: include ShipperNumber for negotiated rates
+    const shipperNumber = (process.env.UPS_SHIPPER_NUMBER || "").trim();
+
+    const body = {
+      RateRequest: {
+        Request: { TransactionReference: { CustomerContext: "Immpression Rate Quote" } },
+        Shipment: {
+          Shipper: {
+            ...(shipperNumber ? { ShipperNumber: shipperNumber } : {}),
+            Address: {
+              PostalCode: fromZip.slice(0,5),
+              CountryCode: shipTo.countryCode || "US"
+            }
+          },
+          ShipTo: {
+            Address: {
+              PostalCode: toZip.slice(0,5),
+              CountryCode: shipTo.countryCode || "US",
+              ...(shipTo.stateCode ? { StateProvinceCode: shipTo.stateCode } : {}),
+              ...(shipTo.city ? { City: shipTo.city } : {}),
+              ResidentialAddressIndicator: shipTo.residential === true ? "" : undefined
+            }
+          },
+          // If you want rates for ALL services, omit Service.
+          // If you want to restrict, you can loop serviceCodes and make multiple calls,
+          // but UPS accepts Service per request. For simplicity we omit here.
+
+          Package: [{
+            PackagingType: { Code: "02" }, // Customer-supplied package
+            Dimensions: {
+              UnitOfMeasurement: { Code: "IN" },
+              Length: String(length),
+              Width:  String(width),
+              Height: String(height)
+            },
+            PackageWeight: {
+              UnitOfMeasurement: { Code: "LBS" },
+              Weight: String(weight)
+            }
+          }],
+
+          // Ask UPS to include time-in-transit with rates:
+          DeliveryTimeInformation: { PackageBillType: "03" } // 03 = Non Document
+        },
+        // Get both list & negotiated if available:
+        AdditionalInfo: { ReturnTransitTimes: "Y", NegotiatedRatesIndicator: shipperNumber ? "Y" : undefined }
+      }
+    };
+
+    const resp = await axios.post(`${apiBase}/api/rating/v2403/Rate`, body, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      validateStatus: () => true
+    });
+
+    if (resp.status >= 400) {
+      return res.status(resp.status).json({
+        success: false,
+        error: resp.data?.response?.errors?.[0]?.message || "UPS rating failed",
+        raw: resp.data
+      });
+    }
+
+    // 4) Normalize response
+    const rated = resp.data?.RateResponse?.RatedShipment || [];
+    const rows = (Array.isArray(rated) ? rated : [rated]).filter(Boolean).map(r => {
+      const serviceCode = r?.Service?.Code || null;
+      const serviceDesc = r?.Service?.Description || null;
+
+      // total charges (negotiated preferred, fallback published)
+      const negotiated = r?.NegotiatedRateCharges?.TotalCharge;
+      const published  = r?.TotalCharges;
+      const money = negotiated?.MonetaryValue || published?.MonetaryValue || null;
+      const currency = negotiated?.CurrencyCode   || published?.CurrencyCode   || "USD";
+
+      // time-in-transit
+      const days =
+        Number(r?.GuaranteedDelivery?.BusinessDaysInTransit) ||
+        Number(r?.TimeInTransit?.ServiceSummary?.EstimatedArrival?.BusinessDaysInTransit) ||
+        null;
+
+      return {
+        carrier: "UPS",
+        serviceCode,
+        serviceName: serviceDesc || serviceCode,
+        amount: money ? Number(money) : null,
+        currency,
+        estBusinessDays: days,
+      };
+    }).filter(x => x.amount !== null);
+
+    // Optional filter by desired services
+    const filtered = serviceCodes.length
+      ? rows.filter(r => serviceCodes.includes(r.serviceCode))
+      : rows;
+
+    // Picks
+    const cheapest = filtered.length ? [...filtered].sort((a,b)=>a.amount-b.amount)[0] : null;
+    const fastest  = filtered.length ? [...filtered].sort((a,b)=>(a.estBusinessDays||99)-(b.estBusinessDays||99))[0] : null;
+
+    return res.json({
+      success: true,
+      rates: filtered,
+      picks: { cheapest, fastest }
+    });
+  } catch (err) {
+    console.error("UPS rates error:", err);
+    return res.status(500).json({ success: false, error: err.message || "Internal Server Error" });
+  }
+});
+
+// ===== SHIPPING QUOTE FOR AN ORDER (UPS) =====
+// GET /order/:id/shipping-quote?services=03,02,12&debug=1
+router.get("/order/:id/shipping-quote", isUserAuthorized, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const debug = String(req.query.debug || "").trim() === "1";
+
+    const order = await OrderModel.findById(id).lean();
+    if (!order) return res.status(404).json({ success: false, error: "Order not found" });
+
+    // Only buyer or seller can quote
+    const isBuyer = String(order.userId) === String(req.user._id);
+    const isSeller = String(order.artistUserId) === String(req.user._id);
+    if (!isBuyer && !isSeller) return res.status(403).json({ success: false, error: "Not allowed" });
+
+    // Resolve ship-from ZIP from seller profile
+    const artist = await UserModel.findById(order.artistUserId).lean();
+    const fromZipRaw = artist?.zipcode || "";
+    const toZipRaw = order?.deliveryDetails?.zipCode || "";
+
+    // Sanitize ZIPs to 5-digit
+    const five = (z) => (String(z || "").match(/\d{5}/)?.[0] || "").slice(0, 5);
+    const fromZip = five(fromZipRaw);
+    const toZip = five(toZipRaw);
+
+    if (!fromZip) return res.status(400).json({ success: false, error: "Seller zipcode missing/invalid" });
+    if (!toZip) return res.status(400).json({ success: false, error: "Order delivery ZIP missing/invalid" });
+
+    // TEMP: default parcel (replace with real listing dims/weight)
+    const parcel = {
+      weightLb: 5,
+      lengthIn: 20,
+      widthIn: 16,
+      heightIn: 4,
+    };
+    const weight = String(Math.max(0.1, Number(parcel.weightLb)));
+    const length = String(Math.max(1, Number(parcel.lengthIn)));
+    const width  = String(Math.max(1, Number(parcel.widthIn)));
+    const height = String(Math.max(1, Number(parcel.heightIn)));
+
+    // Env + token
+    const isProd = (process.env.UPS_ENV || "cie").toLowerCase() === "prod";
+    const apiBase = isProd ? "https://onlinetools.ups.com" : "https://wwwcie.ups.com";
+    const token = await getUpsTokenWithScopes(["rating"]);
+
+    // Use ShipperNumber only in prod (negotiated rates)
+    const shipperNumber = isProd ? (process.env.UPS_SHIPPER_NUMBER || "").trim() : "";
+
+    // Services to rate
+    const serviceCodes =
+      String(req.query.services || "")
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean);
+    const servicesToTry = serviceCodes.length ? serviceCodes : ["03"]; // 03 = UPS Ground
+
+    const buildRateBody = (serviceCode) => ({
+      RateRequest: {
+        Request: { TransactionReference: { CustomerContext: "Immpression Order Quote" } },
+        Shipment: {
+          PickupType: { Code: "01" }, // 01=Daily pickup
+
+          Shipper: {
+            ...(shipperNumber ? { ShipperNumber: shipperNumber } : {}),
+            Address: {
+              PostalCode: fromZip,
+              CountryCode: "US",
+            },
+          },
+          ShipFrom: {
+            Address: {
+              PostalCode: fromZip,
+              CountryCode: "US",
+            },
+          },
+          ShipTo: {
+            Address: {
+              PostalCode: toZip,
+              CountryCode: "US",
+              ResidentialAddressIndicator: "", // treat as residential
+            },
+          },
+
+          Service: { Code: serviceCode },
+
+          Package: [{
+            PackagingType: { Code: "02" }, // customer-supplied
+            Dimensions: {
+              UnitOfMeasurement: { Code: "IN" },
+              Length: length,
+              Width:  width,
+              Height: height,
+            },
+            PackageWeight: {
+              UnitOfMeasurement: { Code: "LBS" },
+              Weight: weight,
+            },
+          }],
+        },
+        AdditionalInfo: {
+          ReturnTransitTimes: "Y",
+          NegotiatedRatesIndicator: shipperNumber ? "Y" : undefined,
+        },
+      },
+    });
+
+    const results = await Promise.allSettled(
+      servicesToTry.map(async (svc) => {
+        const body = buildRateBody(svc);
+        const resp = await axios.post(`${apiBase}/api/rating/v2403/Rate`, body, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          validateStatus: () => true,
+        });
+
+        if (resp.status >= 400) {
+          const upsErr =
+            resp.data?.response?.errors?.[0] ||
+            resp.data?.response?.Errors?.Error?.[0] ||
+            resp.data?.Fault ||
+            resp.data;
+          console.error("UPS Rating error:", JSON.stringify(upsErr, null, 2), {
+            fromZip, toZip, env: process.env.UPS_ENV, service: svc, usedShipperNumber: Boolean(shipperNumber),
+          });
+          throw {
+            code: upsErr?.code || upsErr?.Code || String(resp.status),
+            message: upsErr?.message || upsErr?.responseStatus?.description || "UPS rating failed",
+            service: svc,
+          };
+        }
+
+        // Normalize one response
+        const rated = resp.data?.RateResponse?.RatedShipment || [];
+        const rows = (Array.isArray(rated) ? rated : [rated]).filter(Boolean).map((r) => {
+          const serviceCode = r?.Service?.Code || svc;
+          const serviceName = r?.Service?.Description || serviceCode;
+
+          const published  = r?.TotalCharges || r?.ShipmentTotalCharges; // some tenants use ShipmentTotalCharges
+          const negotiated = r?.NegotiatedRateCharges?.TotalCharge;
+
+          // Keep both list & negotiated, select best available
+          const listAmount        = published?.MonetaryValue != null ? parseFloat(published.MonetaryValue) : null;
+          const negotiatedAmount  = negotiated?.MonetaryValue != null ? parseFloat(negotiated.MonetaryValue) : null;
+          const listCurrency      = published?.CurrencyCode || "USD";
+          const negotiatedCurrency= negotiated?.CurrencyCode || listCurrency;
+
+          // choose negotiated if present, else list
+          const amount   = negotiatedAmount ?? listAmount;
+          const currency = negotiatedAmount != null ? negotiatedCurrency : listCurrency;
+
+          const days =
+            Number(r?.GuaranteedDelivery?.BusinessDaysInTransit) ||
+            Number(r?.TimeInTransit?.ServiceSummary?.EstimatedArrival?.BusinessDaysInTransit) ||
+            null;
+
+          return {
+            carrier: "UPS",
+            serviceCode,
+            serviceName,
+            // main price used by UI:
+            amount: typeof amount === "number" && !Number.isNaN(amount) ? amount : null,
+            currency,
+            // extras so you can compare in UI if desired:
+            listAmount,
+            negotiatedAmount,
+            estBusinessDays: days,
+            _rawLite: debug ? { // tiny debug subset; avoids massive payloads
+              Money: { list: published, negotiated: r?.NegotiatedRateCharges },
+              Codes: { serviceCode },
+            } : undefined,
+          };
+        });
+
+        return rows;
+      })
+    );
+
+    const rates = [];
+    const serviceErrors = [];
+    for (const r of results) {
+      if (r.status === "fulfilled") rates.push(...r.value);
+      else serviceErrors.push(r.reason);
+    }
+
+    // Keep only rows that have a real > 0 price
+    const priced = rates.filter(x => typeof x.amount === "number" && x.amount > 0);
+
+    if (!priced.length) {
+      // If nothing priced, surface error instead of sending $0
+      return res.status(400).json({
+        success: false,
+        error: "No billable UPS rate returned for this shipment.",
+        details: {
+          fromZip, toZip, env: process.env.UPS_ENV,
+          servicesTried: servicesToTry,
+          serviceErrors: serviceErrors.length ? serviceErrors : undefined,
+          hint: "Check parcel weight/dims, PickupType/Service, and ZIPs. In CIE, avoid ShipperNumber.",
+          debugRaw: debug ? "Enable server logs to inspect full UPS payload." : undefined,
+        },
+      });
+    }
+
+    const cheapest = [...priced].sort((a, b) => a.amount - b.amount)[0];
+    const fastest  = [...priced].sort((a, b) => (a.estBusinessDays ?? 999) - (b.estBusinessDays ?? 999))[0];
+
+    return res.json({
+      success: true,
+      parcelDefaultsUsed: parcel,
+      rates: priced,
+      picks: { cheapest, fastest },
+      partialErrors: serviceErrors.length ? serviceErrors : undefined,
+      meta: debug ? { fromZip, toZip, env: process.env.UPS_ENV, servicesTried: servicesToTry } : undefined,
+    });
+  } catch (err) {
+    console.error("shipping-quote error:", err?.response?.data || err);
+    return res.status(500).json({ success: false, error: err.message || "Internal Server Error" });
   }
 });
 
