@@ -18,20 +18,21 @@ export const IMAGE_CATEGORY = [
 
 const CATEGORY_ENUM = {
   values: IMAGE_CATEGORY,
-  message: 'Category should be one of the following: [Paintings, Photography, Graphic Design, Illustrations, Sculptures, Woodwork, Graffiti, Stencil]'
-}
+  message:
+    'Category should be one of the following: [Paintings, Photography, Graphic Design, Illustrations, Sculptures, Woodwork, Graffiti, Stencil]',
+};
 
 // Define enum for image review stages
 export const IMAGE_STAGE = {
   REVIEW: "review",
   APPROVED: "approved",
-  REJECTED: "rejected"
+  REJECTED: "rejected",
 };
 
 const STAGE_ENUM = {
   values: Object.values(IMAGE_STAGE),
-  message: 'Stage should be one of the following: [review, approved, rejected]'
-}
+  message: "Stage should be one of the following: [review, approved, rejected]",
+};
 
 // Define the ImageSchema using the Schema constructor
 const ImageSchema = new Schema(
@@ -53,7 +54,9 @@ const ImageSchema = new Schema(
     },
     imageLink: {
       type: String,
-      required: function () { return this.stage === IMAGE_STAGE.APPROVED; }
+      required: function () {
+        return this.stage === IMAGE_STAGE.APPROVED;
+      },
     },
     price: {
       type: Number,
@@ -82,10 +85,20 @@ const ImageSchema = new Schema(
       },
     ],
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+
+    // Expanded dimensions with length
     dimensions: {
-      height: { type: Number, required: true }, // in inches or cm, your choice
+      height: { type: Number, required: true }, // in inches or cm
       width: { type: Number, required: true },
+      length: { type: Number, required: true }, // ✅ new length field
     },
+
+    // New top-level field for weight
+    weight: {
+      type: Number, // in lbs or kg
+      required: true,
+    },
+
     isSigned: {
       type: Boolean,
       required: true,
@@ -96,18 +109,19 @@ const ImageSchema = new Schema(
       required: true,
       default: false,
     },
-    // New fields for review system
+
+    // Review system fields
     stage: {
       type: String,
       enum: STAGE_ENUM,
       default: IMAGE_STAGE.REVIEW,
     },
-    reviewedByEmail: { type: String }, // ✅ Stores the email of the reviewer
-    reviewedAt: { type: Date }, // ✅ Stores the timestamp of approval/rejection
+    reviewedByEmail: { type: String },
+    reviewedAt: { type: Date },
     rejectionMessage: {
       type: String,
       default: "",
-    }, 
+    },
   },
   { timestamps: true }
 );
@@ -116,5 +130,4 @@ const ImageSchema = new Schema(
 const ImageModel =
   mongoose.models.ImageModel || mongoose.model("Image", ImageSchema);
 
-// Export the Image model
 export default ImageModel;

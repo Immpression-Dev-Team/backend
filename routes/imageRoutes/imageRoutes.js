@@ -44,32 +44,47 @@ router.post('/image', isUserAuthorized, async (request, response) => {
       price,
       description,
       category,
-      dimensions,
+      dimensions,   // { height, width, length }
       isSigned,
       isFramed,
-    } = request.body;    
+      weight,       // <--- NEW
+    } = request.body;
 
-    if (
-      !artistName ||
-      !name ||
-      !imageLink ||
-      !price ||
-      !description ||
-      !category
-    ) {
+    // Basic required fields
+    if (!artistName || !name || !imageLink || price === undefined || !description || !category) {
       return response.status(400).json({
         success: false,
         error: 'Please fill in all fields, select a category, and select an image',
       });
     }
 
-    if (!dimensions || isNaN(dimensions.height) || isNaN(dimensions.width)) {
+    // Dimensions: height, width, length are all required numbers > 0
+    const h = Number(dimensions?.height);
+    const w = Number(dimensions?.width);
+    const l = Number(dimensions?.length); // <--- NEW
+    if (!dimensions || [h, w, l].some(v => Number.isNaN(v))) {
       return response.status(400).json({
         success: false,
-        error: "Dimensions must include valid height and width.",
+        error: 'Dimensions must include valid height, width, and length.',
       });
-    }    
+    }
+    if (h <= 0 || w <= 0 || l <= 0) {
+      return response.status(400).json({
+        success: false,
+        error: 'Dimensions must be positive numbers.',
+      });
+    }
 
+    // Weight required number > 0
+    const weightNum = Number(weight);
+    if (Number.isNaN(weightNum) || weightNum <= 0) {
+      return response.status(400).json({
+        success: false,
+        error: 'Weight is required and must be a positive number.',
+      });
+    }
+
+    // Price validation
     const price_val = validatePrice(price);
     if (!price_val) {
       return response.status(400).json({
@@ -78,34 +93,36 @@ router.post('/image', isUserAuthorized, async (request, response) => {
       });
     }
 
+    // Image URL validation + reachability
     if (!validateImageLink(imageLink)) {
       return response.status(400).json({
         success: false,
         error: `Image link (${imageLink}) is not valid`,
       });
     }
-
     const res = await fetch(imageLink);
     if (res.status !== 200) {
       return response.status(400).json({ success: false, error: 'Image is not accessible' });
     }
 
+    // Create
     const newImage = await ImageModel.create({
-      userId: userId,
-      artistName: artistName,
-      name: name,
-      imageLink: imageLink,
+      userId,
+      artistName,
+      name,
+      imageLink,
       price: price_val,
-      description: description,
-      category: category,
+      description,
+      category,
       dimensions: {
-        height: parseFloat(dimensions.height),
-        width: parseFloat(dimensions.width),
+        height: h,
+        width: w,
+        length: l,         // <--- NEW
       },
+      weight: weightNum,    // <--- NEW
       isSigned: Boolean(isSigned),
       isFramed: Boolean(isFramed),
-    });    
-    console.log('New Image Saved:', newImage);
+    });
 
     return response.status(200).json({
       success: true,
@@ -114,13 +131,14 @@ router.post('/image', isUserAuthorized, async (request, response) => {
     });
   } catch (err) {
     if (err instanceof mongoose.Error.ValidationError) {
-      const errorMsg = Object.values(err.errors).map((error) => error.message).join(', ');
+      const errorMsg = Object.values(err.errors).map((e) => e.message).join(', ');
       return response.status(400).json({ success: false, error: errorMsg });
     }
     console.error('Error Saving Image:', err);
     return response.status(500).json({ success: false, error: err.message });
   }
 });
+
 
 // Route to get all images from the database
 router.get('/all_images', isUserAuthorized, async (request, response) => {
@@ -145,7 +163,7 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
     const images = await ImageModel.find(query)
       .limit(limit)
       .skip(skip)
-      .select('_id userId artistName name description price imageLink views category createdAt stage');
+      .select('_id userId artistName name description price imageLink views category createdAt stage dimensions weight isSigned isFramed');
 
     if (images.length === 0 && page > 1) {
       return response.status(200).json({ success: true, images: [] });
