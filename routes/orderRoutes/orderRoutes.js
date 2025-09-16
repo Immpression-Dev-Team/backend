@@ -425,6 +425,67 @@ async function trackWithFedex(trackingNumber) {
   return resp.data;
 }
 
+// tax helpers
+const cents = (n) => Math.round(Number(n || 0));
+
+// ===== Address normalization (ADD) =====
+const US_STATE_ABBR = {
+  ALABAMA:"AL", ALASKA:"AK", ARIZONA:"AZ", ARKANSAS:"AR", CALIFORNIA:"CA",
+  COLORADO:"CO", CONNECTICUT:"CT", DELAWARE:"DE", FLORIDA:"FL", GEORGIA:"GA",
+  HAWAII:"HI", IDAHO:"ID", ILLINOIS:"IL", INDIANA:"IN", IOWA:"IA", KANSAS:"KS",
+  KENTUCKY:"KY", LOUISIANA:"LA", MAINE:"ME", MARYLAND:"MD", MASSACHUSETTS:"MA",
+  MICHIGAN:"MI", MINNESOTA:"MN", MISSISSIPPI:"MS", MISSOURI:"MO", MONTANA:"MT",
+  NEBRASKA:"NE", NEVADA:"NV", "NEW HAMPSHIRE":"NH", "NEW JERSEY":"NJ",
+  "NEW MEXICO":"NM", "NEW YORK":"NY", "NORTH CAROLINA":"NC", "NORTH DAKOTA":"ND",
+  OHIO:"OH", OKLAHOMA:"OK", OREGON:"OR", PENNSYLVANIA:"PA", "RHODE ISLAND":"RI",
+  "SOUTH CAROLINA":"SC", "SOUTH DAKOTA":"SD", TENNESSEE:"TN", TEXAS:"TX",
+  UTAH:"UT", VERMONT:"VT", VIRGINIA:"VA", WASHINGTON:"WA", "WEST VIRGINIA":"WV",
+  WISCONSIN:"WI", WYOMING:"WY", "DISTRICT OF COLUMBIA":"DC"
+};
+
+function toIsoCountry(c) {
+  if (!c) return "US";
+  const s = String(c).trim().toUpperCase();
+  if (s === "US" || s === "USA" || s.includes("UNITED STATES")) return "US";
+  return s.length === 2 ? s : "US";
+}
+function toUsState(st) {
+  if (!st) return "";
+  const up = String(st).trim().toUpperCase();
+  if (up.length === 2) return up;
+  return US_STATE_ABBR[up] || up;
+}
+function toUsZip(z) {
+  const m = String(z || "").match(/\d{5}(-?\d{4})?/);
+  return m ? m[0].replace("-", "").slice(0, 9) : "";
+}
+
+// REPLACE your existing normAddr with this:
+function normAddr(a = {}) {
+  const line1 = a.line1 || a.address || "";
+  const city = a.city || "";
+  const stateRaw = a.state || a.stateCode || "";
+  const zipRaw = a.postal_code || a.zipCode || a.zip || "";
+  const countryRaw = a.country || "US";
+
+  const country = toIsoCountry(countryRaw);
+  const state = country === "US" ? toUsState(stateRaw) : stateRaw;
+  const postal_code = country === "US" ? toUsZip(zipRaw) : String(zipRaw || "");
+
+  return { line1, city, state, postal_code, country };
+}
+
+// Reserved reference words that Stripe blocks in Tax Calculations
+const RESERVED_TAX_REFERENCES = new Set(["shipping"]);
+function safeTaxRef(ref, fallback) {
+  const v = String(ref || "").trim();
+  if (!v || RESERVED_TAX_REFERENCES.has(v.toLowerCase())) return fallback;
+  // (optional) keep it short
+  return v.slice(0, 80);
+}
+
+
+
 router.get("/orderDetails/:id", async (req, res) => {
   try {
     const order = await OrderModel.findById(req.params.id);
@@ -516,21 +577,108 @@ router.post("/order", isUserAuthorized, async (req, res) => {
   }
 });
 
-
+// POST /orders/calculate-tax
 router.post("/calculate-tax", async (req, res) => {
   try {
-    const { amount, currency, address } = req.body;
+    const currency = (req.body.currency || "usd").toLowerCase();
+    const base     = Math.round(Number(req.body.base));        // cents
+    const shipping = Math.round(Number(req.body.shipping || 0));
+    const address  = normAddr(req.body.address || {});
 
-    // Create a tax calculation
-    const calculation = await stripe.tax.calculations.create({
-      currency: currency,
-      line_items: [
-        {
-          amount: amount,
-          reference: "artwork-purchase",
-        },
-      ],
-      customer_details: {
+    if (!Number.isFinite(base) || base <= 0) {
+      return res.status(400).json({ error: "Invalid base" });
+    }
+    if (!address.postal_code) {
+      return res.status(400).json({ error: "postal_code required" });
+    }
+
+    // Build line_items (do not use "shipping" as reference)
+    const line_items = [{ amount: base, reference: "artwork", tax_behavior: "exclusive" }];
+    if (shipping > 0) {
+      line_items.push({ amount: shipping, reference: "shipping_cost", tax_behavior: "exclusive" });
+    }
+
+    // Stripe Tax on the PLATFORM (no {stripeAccount})
+    const calc = await stripe.tax.calculations.create({
+      currency,
+      line_items,
+      customer_details: { address, address_source: "shipping" },
+    });
+
+    const subtotal = base + shipping;
+    const itemTax = calc.tax_amount_exclusive
+      ?? calc.tax_amount_inclusive
+      ?? (calc.amount_total - calc.amount_subtotal);
+    const total = subtotal + itemTax;
+
+    return res.json({ ok: true, currency, base, shipping, tax: itemTax, total });
+  } catch (e) {
+    console.error("calculate-tax error", e);
+    // Soft fallback (return subtotal with 0 tax)
+    const currency = (req.body.currency || "usd").toLowerCase();
+    const base     = Math.round(Number(req.body.base || 0));
+    const shipping = Math.round(Number(req.body.shipping || 0));
+    return res.status(200).json({
+      ok: true,
+      currency,
+      base,
+      shipping,
+      tax: 0,
+      total: base + shipping,
+      note: "tax_fallback_error",
+    });
+  }
+});
+
+
+// POST /orders/create-payment-intent
+// body: { sellerStripeId, base, shipping, address, platformFee (optional cents), orderId? }
+router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
+  try {
+    const currency    = "usd";
+    const seller      = String(req.body.sellerStripeId || "");
+    const base        = Math.round(Number(req.body.base));
+    const shipping    = Math.round(Number(req.body.shipping || 0));
+    const platformFee = Math.round(Number(req.body.platformFee || 0));
+    const address     = normAddr(req.body.address || {});
+
+    if (!seller) return res.status(400).json({ error: "sellerStripeId required" });
+    if (!Number.isFinite(base) || base <= 0) return res.status(400).json({ error: "Invalid base" });
+    if (!address.postal_code) return res.status(400).json({ error: "postal_code required" });
+
+    // Recompute tax on the server (do not trust client)
+    const line_items = [{ amount: base, reference: "artwork", tax_behavior: "exclusive" }];
+    if (shipping > 0) {
+      line_items.push({ amount: shipping, reference: "shipping_cost", tax_behavior: "exclusive" });
+    }
+
+    const calc = await stripe.tax.calculations.create({
+      currency,
+      line_items,
+      customer_details: { address, address_source: "shipping" },
+    });
+
+    const tax = calc.tax_amount_exclusive
+      ?? calc.tax_amount_inclusive
+      ?? (calc.amount_total - calc.amount_subtotal);
+
+    const total = base + shipping + tax;
+
+    // Seller gets pre-tax share (minus optional platform fee)
+    const sellerShare = Math.max(0, base + shipping - platformFee);
+
+    const pi = await stripe.paymentIntents.create({
+      amount: total,
+      currency,
+      // We precomputed tax; do NOT re-enable automatic tax
+      automatic_tax: { enabled: false },
+      transfer_data: {
+        destination: seller,
+        amount: sellerShare, // tax remains on the platform
+      },
+      ...(platformFee > 0 ? { application_fee_amount: platformFee } : {}),
+      shipping: {
+        name: address.name || req.user?.name || "Customer",
         address: {
           line1: address.line1,
           city: address.city,
@@ -538,57 +686,23 @@ router.post("/calculate-tax", async (req, res) => {
           postal_code: address.postal_code,
           country: address.country,
         },
-        address_source: "billing",
       },
-    });
-
-    res.json({
-      taxAmount: calculation.tax_breakdown[0].amount,
-      taxRate: calculation.tax_breakdown[0].rate,
-      totalAmount: calculation.amount_total,
-    });
-  } catch (error) {
-    console.error("Tax calculation error:", error);
-    res.status(500).json({ error: "Tax calculation failed" });
-  }
-});
-
-router.post("/create-payment-intent", async (req, res) => {
-  try {
-    const { orderId, price } = req.body;
-
-    // if (!orderId) {
-    //   return res.status(400).json({ error: "Missing orderId" });
-    // }
-
-    // const order = await OrderModel.findById(orderId);
-    // if (!order) {
-    //   return res.status(404).json({ error: "Order not found" });
-    // }
-
-    // if (!order.price || !order.artistStripeId) {
-    //   return res
-    //     .status(400)
-    //     .json({ error: "Missing order price or artist Stripe account" });
-    // }
-
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: price,
-      currency: "usd",
-      automatic_payment_methods: {
-        enabled: true,
-      },
+      automatic_payment_methods: { enabled: true },
       metadata: {
-        orderId: orderId,
+        orderId: req.body.orderId || "",
+        base: String(base),
+        shipping: String(shipping),
+        tax: String(tax),
       },
     });
 
-    res.status(200).json({ clientSecret: paymentIntent.client_secret });
-  } catch (error) {
-    console.error("Stripe error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    return res.json({ clientSecret: pi.client_secret, total, tax, sellerShare, platformFee });
+  } catch (e) {
+    console.error("create-payment-intent error", e);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
 
 router.post("/payout", async (req, res) => {
   try {
@@ -1803,6 +1917,108 @@ router.get("/order/:id/shipping-quote", isUserAuthorized, async (req, res) => {
   } catch (err) {
     console.error("shipping-quote error:", err?.response?.data || err);
     return res.status(500).json({ success: false, error: err.message || "Internal Server Error" });
+  }
+});
+
+router.post("/tax/preview", isUserAuthorized, async (req, res) => {
+  try {
+    let artistStripeId, address, items = [], shippingAmt = 0;
+    const currency = "usd";
+
+    if (req.body.orderId) {
+      const order = await OrderModel.findById(req.body.orderId).lean();
+      if (!order) return res.status(404).json({ error: "Order not found" });
+
+      const artist = await UserModel.findById(order.artistUserId).lean();
+      if (!artist?.stripeAccountId) return res.status(400).json({ error: "Artist not connected to Stripe" });
+      artistStripeId = artist.stripeAccountId;
+
+      address = normAddr(order.deliveryDetails);
+      items = [{
+        amount: cents(order.price),
+        quantity: 1,
+        reference: `order:${order._id}`,
+        tax_behavior: "exclusive",
+      }];
+
+      const ship = Number(order.deliveryDetails?.shippingCost || 0);
+      shippingAmt = cents(ship);
+    } else {
+      const { artistUserId, imageId, address: addr, items: rawItems = [], shipping } = req.body;
+
+      let artistId = artistUserId;
+      if (!artistId && imageId) {
+        const img = await ImageModel.findById(imageId).lean();
+        artistId = img?.userId;
+      }
+      const artist = artistId ? await UserModel.findById(artistId).lean() : null;
+      if (!artist?.stripeAccountId) return res.status(400).json({ error: "Artist not connected to Stripe" });
+      artistStripeId = artist.stripeAccountId;
+
+      address = normAddr(addr || {});
+      items = rawItems.map((it, i) => ({
+        amount: cents(it.amount),
+        quantity: Math.max(1, Number(it.quantity || 1)),
+        reference: safeTaxRef(it.reference, `item_${i + 1}`), // sanitize
+        tax_code: it.tax_code,
+        tax_behavior: it.tax_behavior || "exclusive",
+      }));
+      shippingAmt = cents(shipping?.amount || 0);
+    }
+
+    if (!address?.postal_code) return res.status(400).json({ error: "Destination postal_code required" });
+    if (!items.length) return res.status(400).json({ error: "No items to tax" });
+
+    // 1) Items
+    const calc = await stripe.tax.calculations.create({
+      currency,
+      line_items: items.map(li => ({
+        amount: li.amount,
+        quantity: li.quantity,
+        reference: li.reference,
+        tax_code: li.tax_code,
+        tax_behavior: li.tax_behavior || "exclusive",
+      })),
+      customer_details: { address, address_source: "shipping" },
+      expand: ["line_items.data.tax_breakdown", "tax_breakdown"],
+    }, { stripeAccount: artistStripeId });
+
+    // 2) Shipping as its own line (avoid reserved "shipping")
+    let shippingTax = { amount: 0, tax_breakdown: [] };
+    if (shippingAmt > 0) {
+      const calcShip = await stripe.tax.calculations.create({
+        currency,
+        line_items: [{ amount: shippingAmt, reference: "shipping_cost", tax_behavior: "exclusive" }],
+        customer_details: { address, address_source: "shipping" },
+        expand: ["tax_breakdown"],
+      }, { stripeAccount: artistStripeId });
+
+      shippingTax = {
+        amount: calcShip.tax_amount_exclusive
+          ?? calcShip.tax_amount_inclusive
+          ?? (calcShip.amount_total - shippingAmt),
+        tax_breakdown: calcShip.tax_breakdown || [],
+      };
+    }
+
+    const itemTax  = calc.tax_amount_exclusive
+      ?? calc.tax_amount_inclusive
+      ?? (calc.amount_total - calc.amount_subtotal);
+
+    const subtotal = items.reduce((s, it) => s + it.amount * it.quantity, 0);
+    const taxTotal = itemTax + shippingTax.amount;
+    const total    = subtotal + shippingAmt + taxTotal;
+
+    return res.json({
+      ok: true,
+      currency,
+      breakdown: { subtotal, shipping: shippingAmt, tax: taxTotal, total },
+      item_tax_breakdown: calc.tax_breakdown || [],
+      shipping_tax_breakdown: shippingTax.tax_breakdown || [],
+    });
+  } catch (err) {
+    console.error("tax/preview error:", err);
+    return res.status(500).json({ error: "Tax preview failed" });
   }
 });
 
