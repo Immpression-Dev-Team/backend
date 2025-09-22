@@ -430,17 +430,17 @@ const cents = (n) => Math.round(Number(n || 0));
 
 // ===== Address normalization (ADD) =====
 const US_STATE_ABBR = {
-  ALABAMA:"AL", ALASKA:"AK", ARIZONA:"AZ", ARKANSAS:"AR", CALIFORNIA:"CA",
-  COLORADO:"CO", CONNECTICUT:"CT", DELAWARE:"DE", FLORIDA:"FL", GEORGIA:"GA",
-  HAWAII:"HI", IDAHO:"ID", ILLINOIS:"IL", INDIANA:"IN", IOWA:"IA", KANSAS:"KS",
-  KENTUCKY:"KY", LOUISIANA:"LA", MAINE:"ME", MARYLAND:"MD", MASSACHUSETTS:"MA",
-  MICHIGAN:"MI", MINNESOTA:"MN", MISSISSIPPI:"MS", MISSOURI:"MO", MONTANA:"MT",
-  NEBRASKA:"NE", NEVADA:"NV", "NEW HAMPSHIRE":"NH", "NEW JERSEY":"NJ",
-  "NEW MEXICO":"NM", "NEW YORK":"NY", "NORTH CAROLINA":"NC", "NORTH DAKOTA":"ND",
-  OHIO:"OH", OKLAHOMA:"OK", OREGON:"OR", PENNSYLVANIA:"PA", "RHODE ISLAND":"RI",
-  "SOUTH CAROLINA":"SC", "SOUTH DAKOTA":"SD", TENNESSEE:"TN", TEXAS:"TX",
-  UTAH:"UT", VERMONT:"VT", VIRGINIA:"VA", WASHINGTON:"WA", "WEST VIRGINIA":"WV",
-  WISCONSIN:"WI", WYOMING:"WY", "DISTRICT OF COLUMBIA":"DC"
+  ALABAMA: "AL", ALASKA: "AK", ARIZONA: "AZ", ARKANSAS: "AR", CALIFORNIA: "CA",
+  COLORADO: "CO", CONNECTICUT: "CT", DELAWARE: "DE", FLORIDA: "FL", GEORGIA: "GA",
+  HAWAII: "HI", IDAHO: "ID", ILLINOIS: "IL", INDIANA: "IN", IOWA: "IA", KANSAS: "KS",
+  KENTUCKY: "KY", LOUISIANA: "LA", MAINE: "ME", MARYLAND: "MD", MASSACHUSETTS: "MA",
+  MICHIGAN: "MI", MINNESOTA: "MN", MISSISSIPPI: "MS", MISSOURI: "MO", MONTANA: "MT",
+  NEBRASKA: "NE", NEVADA: "NV", "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ",
+  "NEW MEXICO": "NM", "NEW YORK": "NY", "NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND",
+  OHIO: "OH", OKLAHOMA: "OK", OREGON: "OR", PENNSYLVANIA: "PA", "RHODE ISLAND": "RI",
+  "SOUTH CAROLINA": "SC", "SOUTH DAKOTA": "SD", TENNESSEE: "TN", TEXAS: "TX",
+  UTAH: "UT", VERMONT: "VT", VIRGINIA: "VA", WASHINGTON: "WA", "WEST VIRGINIA": "WV",
+  WISCONSIN: "WI", WYOMING: "WY", "DISTRICT OF COLUMBIA": "DC"
 };
 
 function toIsoCountry(c) {
@@ -581,9 +581,9 @@ router.post("/order", isUserAuthorized, async (req, res) => {
 router.post("/calculate-tax", async (req, res) => {
   try {
     const currency = (req.body.currency || "usd").toLowerCase();
-    const base     = Math.round(Number(req.body.base));        // cents
+    const base = Math.round(Number(req.body.base));        // cents
     const shipping = Math.round(Number(req.body.shipping || 0));
-    const address  = normAddr(req.body.address || {});
+    const address = normAddr(req.body.address || {});
 
     if (!Number.isFinite(base) || base <= 0) {
       return res.status(400).json({ error: "Invalid base" });
@@ -601,7 +601,12 @@ router.post("/calculate-tax", async (req, res) => {
     // Stripe Tax on the PLATFORM (no {stripeAccount})
     const calc = await stripe.tax.calculations.create({
       currency,
-      line_items,
+      line_items: [
+        { amount: base, tax_behavior: "exclusive", reference: "artwork" },
+        ...(shipping > 0
+          ? [{ amount: shipping, tax_behavior: "exclusive", reference: "shipping_cost" }]
+          : []),
+      ],
       customer_details: { address, address_source: "shipping" },
     });
 
@@ -616,7 +621,7 @@ router.post("/calculate-tax", async (req, res) => {
     console.error("calculate-tax error", e);
     // Soft fallback (return subtotal with 0 tax)
     const currency = (req.body.currency || "usd").toLowerCase();
-    const base     = Math.round(Number(req.body.base || 0));
+    const base = Math.round(Number(req.body.base || 0));
     const shipping = Math.round(Number(req.body.shipping || 0));
     return res.status(200).json({
       ok: true,
@@ -635,12 +640,12 @@ router.post("/calculate-tax", async (req, res) => {
 // body: { sellerStripeId, base, shipping, address, platformFee (optional cents), orderId? }
 router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
   try {
-    const currency    = "usd";
-    const seller      = String(req.body.sellerStripeId || "");
-    const base        = Math.round(Number(req.body.base));
-    const shipping    = Math.round(Number(req.body.shipping || 0));
+    const currency = "usd";
+    const seller = String(req.body.sellerStripeId || "");
+    const base = Math.round(Number(req.body.base));
+    const shipping = Math.round(Number(req.body.shipping || 0));
     const platformFee = Math.round(Number(req.body.platformFee || 0));
-    const address     = normAddr(req.body.address || {});
+    const address = normAddr(req.body.address || {});
 
     if (!seller) return res.status(400).json({ error: "sellerStripeId required" });
     if (!Number.isFinite(base) || base <= 0) return res.status(400).json({ error: "Invalid base" });
@@ -958,18 +963,18 @@ router.post(
 router.post("/check-stripe-status", async (req, res) => {
   try {
     const rawToken = getAuthToken(req);
-    if (!rawToken) return res.status(401).json({ success:false, message:"No token found" });
+    if (!rawToken) return res.status(401).json({ success: false, message: "No token found" });
 
     let decoded;
     try {
       decoded = jwt.verify(rawToken, process.env.JWT_SECRET);
     } catch {
-      return res.status(401).json({ success:false, message:"Invalid or expired token" });
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
     }
 
     const user = await UserModel.findById(decoded._id);
     if (!user || !user.stripeAccountId) {
-      return res.status(400).json({ success:false, message:"No Stripe account found for this user" });
+      return res.status(400).json({ success: false, message: "No Stripe account found for this user" });
     }
 
     const account = await stripe.accounts.retrieve(user.stripeAccountId);
@@ -996,7 +1001,7 @@ router.post("/check-stripe-status", async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Error checking Stripe account status:", error);
-    return res.status(500).json({ success:false, message:"Failed to check Stripe account status" });
+    return res.status(500).json({ success: false, message: "Failed to check Stripe account status" });
   }
 });
 
@@ -1571,7 +1576,7 @@ router.post("/shipping/ups-rates", async (req, res) => {
 
     const weight = Number(parcel.weightLb || 0);
     const length = Number(parcel.lengthIn || 0);
-    const width  = Number(parcel.widthIn || 0);
+    const width = Number(parcel.widthIn || 0);
     const height = Number(parcel.heightIn || 0);
     if (!(weight > 0 && length > 0 && width > 0 && height > 0)) {
       return res.status(400).json({ success: false, error: "parcel must include positive weightLb, lengthIn, widthIn, heightIn" });
@@ -1594,13 +1599,13 @@ router.post("/shipping/ups-rates", async (req, res) => {
           Shipper: {
             ...(shipperNumber ? { ShipperNumber: shipperNumber } : {}),
             Address: {
-              PostalCode: fromZip.slice(0,5),
+              PostalCode: fromZip.slice(0, 5),
               CountryCode: shipTo.countryCode || "US"
             }
           },
           ShipTo: {
             Address: {
-              PostalCode: toZip.slice(0,5),
+              PostalCode: toZip.slice(0, 5),
               CountryCode: shipTo.countryCode || "US",
               ...(shipTo.stateCode ? { StateProvinceCode: shipTo.stateCode } : {}),
               ...(shipTo.city ? { City: shipTo.city } : {}),
@@ -1616,7 +1621,7 @@ router.post("/shipping/ups-rates", async (req, res) => {
             Dimensions: {
               UnitOfMeasurement: { Code: "IN" },
               Length: String(length),
-              Width:  String(width),
+              Width: String(width),
               Height: String(height)
             },
             PackageWeight: {
@@ -1658,9 +1663,9 @@ router.post("/shipping/ups-rates", async (req, res) => {
 
       // total charges (negotiated preferred, fallback published)
       const negotiated = r?.NegotiatedRateCharges?.TotalCharge;
-      const published  = r?.TotalCharges;
+      const published = r?.TotalCharges;
       const money = negotiated?.MonetaryValue || published?.MonetaryValue || null;
-      const currency = negotiated?.CurrencyCode   || published?.CurrencyCode   || "USD";
+      const currency = negotiated?.CurrencyCode || published?.CurrencyCode || "USD";
 
       // time-in-transit
       const days =
@@ -1684,8 +1689,8 @@ router.post("/shipping/ups-rates", async (req, res) => {
       : rows;
 
     // Picks
-    const cheapest = filtered.length ? [...filtered].sort((a,b)=>a.amount-b.amount)[0] : null;
-    const fastest  = filtered.length ? [...filtered].sort((a,b)=>(a.estBusinessDays||99)-(b.estBusinessDays||99))[0] : null;
+    const cheapest = filtered.length ? [...filtered].sort((a, b) => a.amount - b.amount)[0] : null;
+    const fastest = filtered.length ? [...filtered].sort((a, b) => (a.estBusinessDays || 99) - (b.estBusinessDays || 99))[0] : null;
 
     return res.json({
       success: true,
@@ -1735,7 +1740,7 @@ router.get("/order/:id/shipping-quote", isUserAuthorized, async (req, res) => {
     };
     const weight = String(Math.max(0.1, Number(parcel.weightLb)));
     const length = String(Math.max(1, Number(parcel.lengthIn)));
-    const width  = String(Math.max(1, Number(parcel.widthIn)));
+    const width = String(Math.max(1, Number(parcel.widthIn)));
     const height = String(Math.max(1, Number(parcel.heightIn)));
 
     // Env + token
@@ -1788,7 +1793,7 @@ router.get("/order/:id/shipping-quote", isUserAuthorized, async (req, res) => {
             Dimensions: {
               UnitOfMeasurement: { Code: "IN" },
               Length: length,
-              Width:  width,
+              Width: width,
               Height: height,
             },
             PackageWeight: {
@@ -1838,17 +1843,17 @@ router.get("/order/:id/shipping-quote", isUserAuthorized, async (req, res) => {
           const serviceCode = r?.Service?.Code || svc;
           const serviceName = r?.Service?.Description || serviceCode;
 
-          const published  = r?.TotalCharges || r?.ShipmentTotalCharges; // some tenants use ShipmentTotalCharges
+          const published = r?.TotalCharges || r?.ShipmentTotalCharges; // some tenants use ShipmentTotalCharges
           const negotiated = r?.NegotiatedRateCharges?.TotalCharge;
 
           // Keep both list & negotiated, select best available
-          const listAmount        = published?.MonetaryValue != null ? parseFloat(published.MonetaryValue) : null;
-          const negotiatedAmount  = negotiated?.MonetaryValue != null ? parseFloat(negotiated.MonetaryValue) : null;
-          const listCurrency      = published?.CurrencyCode || "USD";
-          const negotiatedCurrency= negotiated?.CurrencyCode || listCurrency;
+          const listAmount = published?.MonetaryValue != null ? parseFloat(published.MonetaryValue) : null;
+          const negotiatedAmount = negotiated?.MonetaryValue != null ? parseFloat(negotiated.MonetaryValue) : null;
+          const listCurrency = published?.CurrencyCode || "USD";
+          const negotiatedCurrency = negotiated?.CurrencyCode || listCurrency;
 
           // choose negotiated if present, else list
-          const amount   = negotiatedAmount ?? listAmount;
+          const amount = negotiatedAmount ?? listAmount;
           const currency = negotiatedAmount != null ? negotiatedCurrency : listCurrency;
 
           const days =
@@ -1904,7 +1909,7 @@ router.get("/order/:id/shipping-quote", isUserAuthorized, async (req, res) => {
     }
 
     const cheapest = [...priced].sort((a, b) => a.amount - b.amount)[0];
-    const fastest  = [...priced].sort((a, b) => (a.estBusinessDays ?? 999) - (b.estBusinessDays ?? 999))[0];
+    const fastest = [...priced].sort((a, b) => (a.estBusinessDays ?? 999) - (b.estBusinessDays ?? 999))[0];
 
     return res.json({
       success: true,
@@ -2001,13 +2006,13 @@ router.post("/tax/preview", isUserAuthorized, async (req, res) => {
       };
     }
 
-    const itemTax  = calc.tax_amount_exclusive
+    const itemTax = calc.tax_amount_exclusive
       ?? calc.tax_amount_inclusive
       ?? (calc.amount_total - calc.amount_subtotal);
 
     const subtotal = items.reduce((s, it) => s + it.amount * it.quantity, 0);
     const taxTotal = itemTax + shippingTax.amount;
-    const total    = subtotal + shippingAmt + taxTotal;
+    const total = subtotal + shippingAmt + taxTotal;
 
     return res.json({
       ok: true,
