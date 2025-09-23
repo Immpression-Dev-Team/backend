@@ -485,6 +485,25 @@ function safeTaxRef(ref, fallback) {
 }
 
 
+// helpers (same file as routes or in a small util module)
+function computeNextPollAt(status, attempts = 0) {
+  // base cadence by status
+  const baseHours =
+    status === SHIPMENT_STATUS.OUT_FOR_DELIVERY ? 2 :
+    status === SHIPMENT_STATUS.IN_TRANSIT ? 6 :
+    status === SHIPMENT_STATUS.SHIPPED ? 12 :
+    status === SHIPMENT_STATUS.EXCEPTION ? 12 : 12;
+
+  // gentle backoff: +1h every 3 attempts, capped at 24h
+  const extra = Math.min(24 - baseHours, Math.floor((attempts || 0) / 3));
+  const hours = Math.min(baseHours + extra, 24);
+
+  const t = new Date();
+  t.setUTCHours(t.getUTCHours() + hours);
+  return t;
+}
+
+
 
 router.get("/orderDetails/:id", async (req, res) => {
   try {
@@ -1158,6 +1177,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     }
 
     const carrierLc = String(carrier || "").toLowerCase();
+    let status, events = [], titleCarrier;
 
     // ======== UPS BRANCH (direct API, mock allowed in non-prod for test numbers) ========
     if (carrierLc === "ups" || /^1Z[0-9A-Z]{16}$/.test(tn)) {
@@ -1167,23 +1187,21 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
         const forceMock = !isProd && String(req.query.forceMock || "").trim() === "1";
         const usedMock = forceMock || (allowMock && isTestTrackingNumber(tn));
 
-        let upsData = usedMock ? buildMockUpsTracking(tn) : await trackWithUPS(tn);
-
+        const upsData = usedMock ? buildMockUpsTracking(tn) : await trackWithUPS(tn);
         const pkg = upsData?.trackResponse?.shipment?.[0]?.package?.[0];
         if (!pkg) {
           return res.status(400).json({ success: false, message: "UPS returned no package data." });
         }
 
-        const status = mapUpsStatus(pkg.currentStatus || {});
+        status = mapUpsStatus(pkg.currentStatus || {});
         const activities = Array.isArray(pkg?.activity) ? pkg.activity : [];
-        const events = activities.map((a) => {
+        events = activities.map((a) => {
           const dt = parseUpsDate(a?.date, a?.time);
           const locParts = [
             a?.activityLocation?.address?.city,
             a?.activityLocation?.address?.stateProvince,
             a?.activityLocation?.address?.country
           ].filter(Boolean);
-
           const event = {
             status: String(a?.status?.description || a?.activityLocation?.address?.city || "").toLowerCase(),
             message: a?.status?.description || a?.activityScan || "",
@@ -1192,10 +1210,12 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
           if (dt) event.datetime = dt;
           return event;
         });
+        titleCarrier = "UPS";
 
+        // write shipping fields
         if (!order.shipping) order.shipping = {};
         order.shipping.trackingNumber = tn;
-        order.shipping.carrier = "UPS";
+        order.shipping.carrier = titleCarrier;
         order.shipping.shipmentStatus = status;
         order.shipping.shippedAt = order.shipping.shippedAt || new Date();
         order.shipping.trackingEvents = events.filter(
@@ -1206,6 +1226,13 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
           order.shipping.deliveredAt = new Date();
         }
 
+        // seed polling fields
+        order.shipping.pollAttempts = 0;
+        order.shipping.lastPolledAt = null;
+        order.shipping.nextPollAt =
+          status === SHIPMENT_STATUS.DELIVERED ? null : computeNextPollAt(status, 0);
+
+        // notifications
         if (status === SHIPMENT_STATUS.DELIVERED) {
           Notification.create({
             recipientUserId: order.userId,
@@ -1221,6 +1248,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
 
         await order.save();
 
+        // Always tell buyer it's shipped if we just attached tracking
         Notification.create({
           recipientUserId: order.userId,
           actorUserId: order.artistUserId,
@@ -1247,19 +1275,16 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     if (carrierLc === "fedex") {
       try {
         const fedex = await trackWithFedex(tn);
-
-        // Navigate common FedEx schema:
-        // data.output.completeTrackResults[0].trackResults[0]
         const root = fedex?.output?.completeTrackResults?.[0]?.trackResults?.[0];
         if (!root) {
           return res.status(400).json({ success: false, message: "FedEx returned no track results." });
         }
 
         const latest = root?.latestStatusDetail || {};
-        const status = mapFedexStatus(latest);
+        status = mapFedexStatus(latest);
 
         const scans = Array.isArray(root?.scanEvents) ? root.scanEvents : [];
-        const events = scans.map((ev) => {
+        events = scans.map((ev) => {
           const dt = parseFedexDate(ev?.date || ev?.dateTime || ev?.eventDateTime);
           const addr = ev?.scanLocation || ev?.scanLocation?.address || ev?.location || {};
           const locParts = [
@@ -1267,7 +1292,6 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
             addr?.stateOrProvinceCode,
             addr?.countryCode || addr?.countryName,
           ].filter(Boolean);
-
           const event = {
             status: String(ev?.eventDescription || ev?.derivedStatus || "").toLowerCase(),
             message: ev?.eventDescription || ev?.derivedStatus || latest?.description || "",
@@ -1276,10 +1300,11 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
           if (dt) event.datetime = dt;
           return event;
         });
+        titleCarrier = "FedEx";
 
         if (!order.shipping) order.shipping = {};
         order.shipping.trackingNumber = tn;
-        order.shipping.carrier = "FedEx";
+        order.shipping.carrier = titleCarrier;
         order.shipping.shipmentStatus = status;
         order.shipping.shippedAt = order.shipping.shippedAt || new Date();
         order.shipping.trackingEvents = events.filter(
@@ -1287,13 +1312,18 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
         );
         order.shipping.verified = order.shipping.verified || order.shipping.trackingEvents.length > 0;
 
-        // delivered time if present
         if (status === SHIPMENT_STATUS.DELIVERED && !order.shipping.deliveredAt) {
           const deliveredScan = scans.find(s => /delivered/i.test(s?.eventDescription || ""));
           order.shipping.deliveredAt = deliveredScan
             ? parseFedexDate(deliveredScan?.date || deliveredScan?.dateTime || deliveredScan?.eventDateTime) || new Date()
             : new Date();
         }
+
+        // seed polling fields
+        order.shipping.pollAttempts = 0;
+        order.shipping.lastPolledAt = null;
+        order.shipping.nextPollAt =
+          status === SHIPMENT_STATUS.DELIVERED ? null : computeNextPollAt(status, 0);
 
         if (status === SHIPMENT_STATUS.DELIVERED) {
           Notification.create({
@@ -1374,8 +1404,8 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
       return res.status(400).json({ success: false, message: "Unable to retrieve tracking details." });
     }
 
-    const status = mapStatus(t.tag || t.subtag || t.status);
-    const titleCarrier = toTitleCaseCarrier(t.slug || carrier);
+    status = mapStatus(t.tag || t.subtag || t.status);
+    titleCarrier = toTitleCaseCarrier(t.slug || carrier);
 
     if (!order.shipping) order.shipping = {};
     order.shipping.trackingNumber = tn;
@@ -1385,7 +1415,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
     order.shipping.aftershipTrackingId = t.id;
 
     const checkpoints = Array.isArray(t.checkpoints) ? t.checkpoints : [];
-    order.shipping.trackingEvents = checkpoints.map((c) => {
+    events = checkpoints.map((c) => {
       const dt = c.checkpoint_time ? new Date(c.checkpoint_time) : undefined;
       const event = {
         status: String(c.tag || c.subtag || c.status || "").toLowerCase(),
@@ -1396,12 +1426,44 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
       return event;
     });
 
+    order.shipping.trackingEvents = events;
     order.shipping.verified = order.shipping.verified || order.shipping.trackingEvents.length > 0;
     if (status === SHIPMENT_STATUS.DELIVERED && !order.shipping.deliveredAt) {
       order.shipping.deliveredAt = new Date();
     }
 
+    // seed polling fields
+    order.shipping.pollAttempts = 0;
+    order.shipping.lastPolledAt = null;
+    order.shipping.nextPollAt =
+      status === SHIPMENT_STATUS.DELIVERED ? null : computeNextPollAt(status, 0);
+
     await order.save();
+
+    // (Optional) notify shipped (kept same behavior as your original)
+    Notification.create({
+      recipientUserId: order.userId,
+      actorUserId: order.artistUserId,
+      type: NOTIFICATION_TYPE.ORDER_SHIPPED,
+      title: "Order shipped",
+      message: `Your “${order.artName}” has been shipped via ${order.shipping.carrier}.`,
+      orderId: order._id,
+      imageId: order.imageId,
+      data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+    }).catch(err => console.error("Notif create error:", err));
+
+    if (status === SHIPMENT_STATUS.DELIVERED) {
+      Notification.create({
+        recipientUserId: order.userId,
+        actorUserId: order.artistUserId,
+        type: NOTIFICATION_TYPE.ORDER_DELIVERED,
+        title: "Delivered",
+        message: `“${order.artName}” was delivered.`,
+        orderId: order._id,
+        imageId: order.imageId,
+        data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+      }).catch(err => console.error("Notif create error:", err));
+    }
 
     return res.status(200).json({
       success: true,
@@ -1414,6 +1476,7 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
   }
 });
 // =========================================================================================
+
 
 
 
@@ -2026,6 +2089,182 @@ router.post("/tax/preview", isUserAuthorized, async (req, res) => {
     return res.status(500).json({ error: "Tax preview failed" });
   }
 });
+
+
+// --- CRON GUARD + HANDLER ---
+function pollDueGuard(req, res, next) {
+  const headerSecret = req.headers["x-cron-secret"];
+  const querySecret = req.query.secret;
+  const required = process.env.CRON_SECRET;
+
+  if (required && headerSecret !== required && querySecret !== required) {
+    return res.status(403).json({ ok: false, error: "forbidden" });
+  }
+  next();
+}
+
+async function pollDueHandler(req, res) {
+  try {
+    const now = new Date();
+    const due = await OrderModel.find({
+      "shipping.trackingNumber": { $exists: true, $ne: null },
+      "shipping.shipmentStatus": { $ne: SHIPMENT_STATUS.DELIVERED },
+      $or: [
+        { "shipping.nextPollAt": { $lte: now } },
+        { "shipping.nextPollAt": { $exists: false } }
+      ]
+    })
+    .sort({ "shipping.nextPollAt": 1 })
+    .limit(50);
+
+    const results = [];
+    const MAX_ATTEMPTS = 120;
+
+    for (const order of due) {
+      const tn = order.shipping?.trackingNumber;
+      const carrierName = String(order.shipping?.carrier || "").toLowerCase();
+      const prevStatus = order.shipping?.shipmentStatus || null;
+      const attempts = order.shipping?.pollAttempts || 0;
+
+      try {
+        let newStatus = prevStatus;
+        let newEvents = order.shipping?.trackingEvents || [];
+
+        if (carrierName === "ups" || /^1Z[0-9A-Z]{16}$/.test(tn)) {
+          const data = await trackWithUPS(tn);
+          const pkg = data?.trackResponse?.shipment?.[0]?.package?.[0];
+          if (!pkg) throw new Error("UPS: no package data");
+          newStatus = mapUpsStatus(pkg.currentStatus || {});
+          const acts = Array.isArray(pkg.activity) ? pkg.activity : [];
+          newEvents = acts.map(a => {
+            const dt = parseUpsDate(a?.date, a?.time);
+            const loc = [a?.activityLocation?.address?.city, a?.activityLocation?.address?.stateProvince, a?.activityLocation?.address?.country]
+              .filter(Boolean).join(", ");
+            const ev = {
+              status: String(a?.status?.description || "").toLowerCase(),
+              message: a?.status?.description || a?.activityScan || "",
+              location: loc,
+            };
+            if (dt) ev.datetime = dt;
+            return ev;
+          }).filter(e => !("datetime" in e) || (e.datetime instanceof Date && !isNaN(e.datetime)));
+          if (newStatus === SHIPMENT_STATUS.DELIVERED && !order.shipping.deliveredAt) {
+            order.shipping.deliveredAt = new Date();
+          }
+        } else if (carrierName === "fedex") {
+          const fedex = await trackWithFedex(tn);
+          const root = fedex?.output?.completeTrackResults?.[0]?.trackResults?.[0];
+          if (!root) throw new Error("FedEx: no track results");
+          const latest = root?.latestStatusDetail || {};
+          newStatus = mapFedexStatus(latest);
+          const scans = Array.isArray(root?.scanEvents) ? root.scanEvents : [];
+          newEvents = scans.map(ev => {
+            const dt = parseFedexDate(ev?.date || ev?.dateTime || ev?.eventDateTime);
+            const addr = ev?.scanLocation || ev?.scanLocation?.address || ev?.location || {};
+            const loc = [addr?.city, addr?.stateOrProvinceCode, addr?.countryCode || addr?.countryName]
+              .filter(Boolean).join(", ");
+            const e = {
+              status: String(ev?.eventDescription || ev?.derivedStatus || "").toLowerCase(),
+              message: ev?.eventDescription || ev?.derivedStatus || latest?.description || "",
+              location: loc,
+            };
+            if (dt) e.datetime = dt;
+            return e;
+          }).filter(e => !("datetime" in e) || (e.datetime instanceof Date && !isNaN(e.datetime)));
+          if (newStatus === SHIPMENT_STATUS.DELIVERED && !order.shipping.deliveredAt) {
+            const deliveredScan = scans.find(s => /delivered/i.test(s?.eventDescription || ""));
+            order.shipping.deliveredAt = deliveredScan
+              ? parseFedexDate(deliveredScan?.date || deliveredScan?.dateTime || deliveredScan?.eventDateTime) || new Date()
+              : new Date();
+          }
+        } else {
+          const slug = carrierName || "auto";
+          const fetched = await axios.get(
+            `https://api.aftership.com/v4/trackings/${slug}/${encodeURIComponent(tn)}`,
+            { headers: { "aftership-api-key": process.env.AFTERSHIP_API_KEY } }
+          );
+          const t = fetched.data?.data?.tracking;
+          if (!t) throw new Error("AfterShip: no tracking");
+          newStatus = mapStatus(t.tag || t.subtag || t.status);
+          const cps = Array.isArray(t.checkpoints) ? t.checkpoints : [];
+          newEvents = cps.map(c => {
+            const dt = c.checkpoint_time ? new Date(c.checkpoint_time) : undefined;
+            const ev = {
+              status: String(c.tag || c.subtag || c.status || "").toLowerCase(),
+              message: c.message || c.checkpoint_message,
+              location: [c.city, c.state, c.country_name].filter(Boolean).join(", "),
+            };
+            if (dt && !isNaN(dt)) ev.datetime = dt;
+            return ev;
+          });
+          if (newStatus === SHIPMENT_STATUS.DELIVERED && !order.shipping.deliveredAt) {
+            order.shipping.deliveredAt = new Date();
+          }
+        }
+
+        order.shipping.trackingEvents = newEvents;
+        order.shipping.shipmentStatus = newStatus;
+        order.shipping.lastPolledAt = new Date();
+        order.shipping.pollAttempts = attempts + 1;
+
+        const shouldStop =
+          newStatus === SHIPMENT_STATUS.DELIVERED ||
+          order.shipping.pollAttempts >= MAX_ATTEMPTS;
+
+        order.shipping.nextPollAt = shouldStop
+          ? null
+          : computeNextPollAt(newStatus, order.shipping.pollAttempts);
+
+        if (prevStatus !== newStatus) {
+          if (newStatus === SHIPMENT_STATUS.OUT_FOR_DELIVERY) {
+            Notification.create({
+              recipientUserId: order.userId,
+              actorUserId: order.artistUserId,
+              type: NOTIFICATION_TYPE.ORDER_OUT_FOR_DELIVERY,
+              title: "Out for delivery",
+              message: `“${order.artName}” is out for delivery.`,
+              orderId: order._id, imageId: order.imageId,
+              data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+            }).catch(()=>{});
+          }
+          if (newStatus === SHIPMENT_STATUS.DELIVERED) {
+            Notification.create({
+              recipientUserId: order.userId,
+              actorUserId: order.artistUserId,
+              type: NOTIFICATION_TYPE.ORDER_DELIVERED,
+              title: "Delivered",
+              message: `“${order.artName}” was delivered.`,
+              orderId: order._id, imageId: order.imageId,
+              data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+            }).catch(()=>{});
+          }
+        }
+
+        await order.save();
+
+        results.push({
+          orderId: String(order._id),
+          from: prevStatus,
+          to: newStatus,
+          attempts: order.shipping.pollAttempts,
+          nextPollAt: order.shipping.nextPollAt,
+        });
+      } catch (e) {
+        results.push({ orderId: String(order._id), error: e.message || String(e) });
+      }
+    }
+
+    return res.json({ ok: true, processed: due.length, results });
+  } catch (e) {
+    console.error("poll-due error", e);
+    return res.status(500).json({ ok: false, error: "poll failed" });
+  }
+}
+
+// Expose both POST and GET so Vercel Cron (GET) works
+router.post("/orders/shipments/poll-due", pollDueGuard, pollDueHandler);
+router.get("/orders/shipments/poll-due", pollDueGuard, pollDueHandler);
+
 
 
 export default router;
