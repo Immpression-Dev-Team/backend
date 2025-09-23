@@ -17,15 +17,22 @@ const SHIPMENT_STATUS_ENUM = {
   message: "Shipment status should be one of the predefined values",
 };
 
-// Normalize carrier codes from AfterShip to your TitleCase enum
+// Normalize carrier codes from slugs → TitleCase used in DB
 const toTitleCaseCarrier = (val) => {
   if (!val) return val;
-  const map = { usps: "USPS", ups: "UPS", fedex: "FedEx", dhl: "DHL",
-    canadapost: "CanadaPost", royalmail: "RoyalMail",
-    australiapost: "AustraliaPost", laposte: "LaPoste", deutschepost: "DeutschePost"
+  const map = {
+    usps: "USPS",
+    ups: "UPS",
+    fedex: "FedEx",
+    dhl: "DHL",
+    canadapost: "CanadaPost",
+    royalmail: "RoyalMail",
+    australiapost: "AustraliaPost",
+    laposte: "LaPoste",
+    deutschepost: "DeutschePost",
   };
   const key = String(val).replace(/\s+/g, "").toLowerCase();
-  return map[key] || val; // fall back to original (will fail enum if unsupported)
+  return map[key] || val; // fall back (will fail enum if unsupported)
 };
 
 const TrackingEventSchema = new Schema(
@@ -43,7 +50,7 @@ const ShippingSchema = new Schema(
     trackingNumber: { type: String, trim: true, uppercase: true, index: true },
     carrier: {
       type: String,
-      set: toTitleCaseCarrier, // normalize on write
+      set: toTitleCaseCarrier,
       enum: {
         values: [
           "USPS",
@@ -59,28 +66,30 @@ const ShippingSchema = new Schema(
         message: "Carrier must be a supported shipping provider",
       },
     },
+
     shipmentStatus: {
       type: String,
       enum: SHIPMENT_STATUS_ENUM,
       default: SHIPMENT_STATUS.PENDING,
       index: true,
     },
+
     shippedAt: { type: Date },
     estimatedDelivery: { type: Date },
-    deliveredAt: { type: Date },        // ⬅ add
+    deliveredAt: { type: Date },
 
-    // Verification signal: becomes true on first carrier scan/webhook event
-    verified: { type: Boolean, default: false }, // ⬅ add
+    // becomes true on first carrier scan/webhook verification
+    verified: { type: Boolean, default: false },
 
-    // AfterShip specific
+    // AfterShip integration (optional)
     aftershipTrackingId: { type: String, sparse: true },
     trackingDetails: {
       type: Schema.Types.Mixed,
       default: {},
-      select: false, // optional: avoid heavy payloads on every query
+      select: false, // keep payloads light unless explicitly selected
     },
 
-    // Optional: where the seller actually shipped (if needed)
+    // Optional: origin address snapshot
     shippingAddress: {
       name: { type: String },
       street1: { type: String },
@@ -92,6 +101,11 @@ const ShippingSchema = new Schema(
     },
 
     trackingEvents: [TrackingEventSchema],
+
+    // Polling scheduler fields (used by /tracking/run & helpers)
+    nextPollAt: { type: Date },
+    pollBackoffSec: { type: Number, default: 600 },
+    lastCarrierPingAt: { type: Date },
   },
   { _id: false }
 );
@@ -99,15 +113,19 @@ const ShippingSchema = new Schema(
 const OrderSchema = new Schema(
   {
     imageId: { type: Schema.Types.ObjectId, ref: "Image", required: true },
+    imageLink: { type: String }, // used in notifications/list endpoints
+
     artName: { type: String, required: true },
     artistName: { type: String },
 
-    // ⬇ NEW: enforce seller-only submission checks in your route
-    artistUserId: { type: Schema.Types.ObjectId, ref: "User", required: true }, // ⬅ add
-
+    // seller/artist identity & payouts
+    artistUserId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     artistStripeId: { type: String, required: true },
+
+    // price stored in your currency's minor unit choice (routes treat as dollars→cents elsewhere)
     price: { type: Number, required: true },
 
+    // buyer identity + shipping destination
     userAccountName: { type: String, required: true },
     deliveryDetails: {
       name: { type: String, required: true },
@@ -116,10 +134,21 @@ const OrderSchema = new Schema(
       state: { type: String, required: true },
       zipCode: { type: String, required: true },
       country: { type: String, required: true },
+      // optional fields your routes may add/read later
+      shippingCost: { type: Number },
     },
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
 
+    // platform-level order state
     status: {
+      type: String,
+      enum: ["pending", "paid", "failed", "refunded"],
+      default: "pending",
+      index: true,
+    },
+
+    // payment mirrors used in routes/webhook
+    paymentStatus: {
       type: String,
       enum: ["pending", "paid", "failed", "refunded"],
       default: "pending",
@@ -136,10 +165,13 @@ const OrderSchema = new Schema(
   { timestamps: true }
 );
 
-// Helpful compound indexes
-OrderSchema.index({ "shipping.trackingNumber": 1, _id: 1 }); // lookups by tracking → order
-OrderSchema.index({ "shipping.aftershipTrackingId": 1 });      // webhooks → order fast
+// Helpful indexes
+OrderSchema.index({ "shipping.trackingNumber": 1, _id: 1 });
+OrderSchema.index({ "shipping.aftershipTrackingId": 1 });
+OrderSchema.index({ "shipping.nextPollAt": 1, "shipping.shipmentStatus": 1 });
 
-const OrderModel = mongoose.models.Order || mongoose.model("Order", OrderSchema);
+const OrderModel =
+  mongoose.models.Order || mongoose.model("Order", OrderSchema);
+
 export default OrderModel;
 export { ShippingSchema, TrackingEventSchema };
