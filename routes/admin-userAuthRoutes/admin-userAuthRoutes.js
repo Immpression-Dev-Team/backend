@@ -8,6 +8,9 @@ import UserModel from "../../models/users.js"; // Import the User model
 import { isAdminAuthorized, generateAdminAuthToken, getAuthToken } from "../../utils/authUtils.js";
 import ImageModel from "../../models/images.js";
 import cloudinary from "cloudinary";
+import Notification, { NOTIFICATION_TYPE } from "../../models/notifications.js";
+import sendEmail from "../../services/email.js"; // your nodemailer wrapper
+
 
 const router = express.Router();
 
@@ -233,29 +236,71 @@ router.get("/art/:id", isAdminAuthorized, async (req, res) => {
 // ✅ Admin-only route to approve an artwork
 router.put("/art/:id/approve", isAdminAuthorized, async (req, res) => {
     try {
-        const { id } = req.params;
-        const adminEmail = req.admin.email; // ✅ Get admin's email from JWT token
-
-        const updatedArt = await ImageModel.findByIdAndUpdate(
-            id,
-            { 
-                stage: "approved",
-                reviewedByEmail: adminEmail, // ✅ Save the email of the approving admin
-                reviewedAt: new Date() // ✅ Save the timestamp
-            },
-            { new: true }
-        );
-
-        if (!updatedArt) {
-            return res.status(404).json({ success: false, error: "Artwork not found" });
+      const { id } = req.params;
+      const adminEmail = req.admin.email;
+  
+      // we need the owner (recipient) to notify
+      const art = await ImageModel.findById(id).lean();
+      if (!art) {
+        return res.status(404).json({ success: false, error: "Artwork not found" });
+      }
+  
+      const updatedArt = await ImageModel.findByIdAndUpdate(
+        id,
+        {
+          stage: "approved",
+          reviewedByEmail: adminEmail,
+          reviewedAt: new Date(),
+        },
+        { new: true }
+      );
+  
+      // ---- create in-app notification for the artist ----
+      try {
+        await Notification.create({
+          recipientUserId: art.userId,          // artist (owner of artwork)
+          actorUserId: null,                    // system/admin; leave null or set an admin user id
+          type: NOTIFICATION_TYPE.IMAGE_APPROVED,
+          title: "Artwork approved",
+          message: `Your artwork “${art.name}” has been approved and is now visible to buyers.`,
+          imageId: art._id,
+          data: {
+            artName: art.name,
+            artistName: art.artistName,
+            imageLink: art.imageLink,
+            price: art.price,
+          },
+        });
+      } catch (nErr) {
+        console.error("Create notification (approved) failed:", nErr);
+      }
+  
+      // ---- optional: send email to the artist ----
+      try {
+        const artist = await UserModel.findById(art.userId).lean();
+        if (artist?.email) {
+          const subject = "Your artwork was approved";
+          const html = `
+            <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">
+              <h2>Great news, ${artist.name || "artist"}!</h2>
+              <p>Your artwork <strong>${art.name}</strong> has been approved.</p>
+              <p>It’s now visible to buyers. Good luck with your sales!</p>
+              <hr/>
+              <p style="color:#777">If you weren’t expecting this email, you can ignore it.</p>
+            </div>`;
+          await sendEmail(artist.email, subject, html);
         }
-
-        res.status(200).json({ success: true, message: "Artwork approved", art: updatedArt });
+      } catch (e) {
+        console.error("Send approval email failed:", e);
+      }
+  
+      return res.status(200).json({ success: true, message: "Artwork approved", art: updatedArt });
     } catch (error) {
-        console.error("Error approving artwork:", error);
-        res.status(500).json({ success: false, error: "Internal Server Error" });
+      console.error("Error approving artwork:", error);
+      res.status(500).json({ success: false, error: "Internal Server Error" });
     }
-});
+  });
+  
 
 
 // ✅ Admin-only route to reject an artwork
@@ -264,6 +309,12 @@ router.put("/art/:id/reject", isAdminAuthorized, async (req, res) => {
       const { id } = req.params;
       const { rejectionMessage } = req.body;
       const adminEmail = req.admin.email;
+  
+      // Grab the art first so we definitely have owner + fields for the notif
+      const art = await ImageModel.findById(id).lean();
+      if (!art) {
+        return res.status(404).json({ success: false, error: "Artwork not found" });
+      }
   
       const updatedArt = await ImageModel.findByIdAndUpdate(
         id,
@@ -276,16 +327,38 @@ router.put("/art/:id/reject", isAdminAuthorized, async (req, res) => {
         { new: true }
       );
   
-      if (!updatedArt) {
-        return res.status(404).json({ success: false, error: "Artwork not found" });
+      // ---- in-app notification (email will be sent by Notification post-save hook) ----
+      try {
+        const reason = (rejectionMessage || "").trim();
+        await Notification.create({
+          recipientUserId: art.userId,          // artist (owner)
+          actorUserId: null,                    // system/admin
+          type: NOTIFICATION_TYPE.IMAGE_REJECTED,
+          title: "Artwork rejected",
+          message: `Your artwork “${art.name}” was rejected${reason ? `: ${reason}` : "."}`,
+          imageId: art._id,
+          data: {
+            artName: art.name,
+            artistName: art.artistName,
+            imageLink: art.imageLink,
+            price: art.price,
+          },
+        });
+      } catch (nErr) {
+        console.error("Create notification (rejected) failed:", nErr);
       }
   
-      res.status(200).json({ success: true, message: "Artwork rejected", art: updatedArt });
+      // (No need to call sendEmail here—your NotificationSchema.post('save') already emails)
+  
+      return res
+        .status(200)
+        .json({ success: true, message: "Artwork rejected", art: updatedArt });
     } catch (error) {
       console.error("Error rejecting artwork:", error);
-      res.status(500).json({ success: false, error: "Internal Server Error" });
+      return res.status(500).json({ success: false, error: "Internal Server Error" });
     }
-  });  
+  });
+  
 
 // ✅ Admin-only route to get all users
 router.get("/users", isAdminAuthorized, async (req, res) => {
