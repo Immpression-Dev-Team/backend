@@ -656,51 +656,115 @@ router.post("/calculate-tax", async (req, res) => {
 
 
 // POST /orders/create-payment-intent
-// body: { sellerStripeId, base, shipping, address, platformFee (optional cents), orderId? }
+// Body options:
+//   Legacy: { sellerStripeId, base, shipping, platformFee?, address, orderId? }
+//   Items : { sellerStripeId, items:[{amount, quantity?, reference?, tax_code?, tax_behavior?}],
+//             shipping:{amount?}, platformFee?, address, orderId?, useTaxPreview? }
+//
+// Env flags:
+//   STRIPE_TAX_SCOPE      = "platform" | "connected"   (default "platform")
+//   STRIPE_TAX_PI_PREVIEW = "1"                        (enable PI+Tax preview hook)
+
 router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
   try {
     const currency = "usd";
-    const seller = String(req.body.sellerStripeId || "");
-    const base = Math.round(Number(req.body.base));
-    const shipping = Math.round(Number(req.body.shipping || 0));
-    const platformFee = Math.round(Number(req.body.platformFee || 0));
-    const address = normAddr(req.body.address || {});
-
+    const seller = String(req.body.sellerStripeId || "").trim();
     if (!seller) return res.status(400).json({ error: "sellerStripeId required" });
-    if (!Number.isFinite(base) || base <= 0) return res.status(400).json({ error: "Invalid base" });
+
+    const address = normAddr(req.body.address || {});
     if (!address.postal_code) return res.status(400).json({ error: "postal_code required" });
 
-    // Recompute tax on the server (do not trust client)
-    const line_items = [{ amount: base, reference: "artwork", tax_behavior: "exclusive" }];
-    if (shipping > 0) {
-      line_items.push({ amount: shipping, reference: "shipping_cost", tax_behavior: "exclusive" });
+    const platformFee = Math.max(0, Math.round(Number(req.body.platformFee || 0)));
+
+    // ---- inputs: items[] or legacy base+shipping ----
+    let items = Array.isArray(req.body.items) ? req.body.items : null;
+
+    if (items && items.length) {
+      items = items.map((it, i) => ({
+        amount: Math.round(Number(it.amount)),
+        quantity: Math.max(1, Number(it.quantity || 1)),
+        reference: safeTaxRef(it.reference, `item_${i + 1}`), // avoid reserved "shipping"
+        tax_code: it.tax_code,
+        tax_behavior: it.tax_behavior || "exclusive",
+      }));
+      if (!items.every(it => Number.isFinite(it.amount) && it.amount > 0)) {
+        return res.status(400).json({ error: "items[].amount must be positive integer cents" });
+      }
+      const shipAmt = Math.round(Number(req.body?.shipping?.amount || 0));
+      if (shipAmt > 0) {
+        items.push({ amount: shipAmt, quantity: 1, reference: "shipping_cost", tax_behavior: "exclusive" });
+      }
+    } else {
+      const base = Math.round(Number(req.body.base));
+      const shipping = Math.max(0, Math.round(Number(req.body.shipping || 0)));
+      if (!Number.isFinite(base) || base <= 0) return res.status(400).json({ error: "Invalid base" });
+      items = [
+        { amount: base, quantity: 1, reference: "artwork", tax_behavior: "exclusive" },
+        ...(shipping > 0
+          ? [{ amount: shipping, quantity: 1, reference: "shipping_cost", tax_behavior: "exclusive" }]
+          : []),
+      ];
     }
 
+    // ---- where to create the Tax Calculation ----
+    const taxScope = (process.env.STRIPE_TAX_SCOPE || "platform").toLowerCase();
+    const calcOpts = taxScope === "connected" ? { stripeAccount: seller } : undefined;
+
+    // ---- Stripe Tax Calculation ----
     const calc = await stripe.tax.calculations.create({
       currency,
-      line_items,
+      line_items: items.map(li => ({
+        amount: li.amount,
+        quantity: li.quantity,
+        reference: li.reference,
+        tax_code: li.tax_code,
+        tax_behavior: li.tax_behavior || "exclusive",
+      })),
       customer_details: { address, address_source: "shipping" },
-    });
+      expand: ["line_items.data.tax_breakdown", "tax_breakdown"],
+    }, calcOpts);
 
-    const tax = calc.tax_amount_exclusive
-      ?? calc.tax_amount_inclusive
-      ?? (calc.amount_total - calc.amount_subtotal);
+    // ---- totals (with fallback if amount_subtotal missing on your API ver) ----
+    const amountTotal = Number(calc.amount_total);                  // authoritative total (cents)
+    const taxExclusive = Number(calc.tax_amount_exclusive || 0);
+    const taxInclusive = Number(calc.tax_amount_inclusive || 0);
+    const tax = taxExclusive + taxInclusive;
+    const amountSubtotal = Number.isFinite(Number(calc.amount_subtotal))
+      ? Number(calc.amount_subtotal)
+      : (amountTotal - tax);
 
-    const total = base + shipping + tax;
+    if (![amountTotal, amountSubtotal, tax].every(Number.isFinite)) {
+      console.error("Tax calc bad numbers:", {
+        amount_total: calc.amount_total,
+        amount_subtotal: calc.amount_subtotal,
+        tax_exclusive: calc.tax_amount_exclusive,
+        tax_inclusive: calc.tax_amount_inclusive,
+      });
+      return res.status(502).json({ error: "Stripe tax calculation returned invalid amounts" });
+    }
 
-    // Seller gets pre-tax share (minus optional platform fee)
-    const sellerShare = Math.max(0, base + shipping - platformFee);
+    // Platform collects: tax + platformFee (as application fee)
+    const appFee = Math.max(0, tax + platformFee);
+    // Seller receives: total - appFee  ==  (subtotal - platformFee)
+    const sellerNet = amountTotal - appFee;
 
-    const pi = await stripe.paymentIntents.create({
-      amount: total,
+    // ---- optional PI+Tax preview linkage ----
+    const usePreview =
+      String(req.body.useTaxPreview || "").trim() === "1" ||
+      String(process.env.STRIPE_TAX_PI_PREVIEW || "").trim() === "1";
+
+    // ---- PaymentIntent params (destination charge + application_fee_amount) ----
+    const piParams = {
+      amount: amountTotal,
       currency,
-      // We precomputed tax; do NOT re-enable automatic tax
-      automatic_tax: { enabled: false },
-      transfer_data: {
-        destination: seller,
-        amount: sellerShare, // tax remains on the platform
-      },
-      ...(platformFee > 0 ? { application_fee_amount: platformFee } : {}),
+      automatic_payment_methods: { enabled: true },
+
+      // Destination charge: send to seller; DO NOT include transfer_data.amount
+      transfer_data: { destination: seller },
+
+      // Platform collects tax + platform fee as application fee
+      ...(appFee > 0 ? { application_fee_amount: appFee } : {}),
+
       shipping: {
         name: address.name || req.user?.name || "Customer",
         address: {
@@ -711,16 +775,50 @@ router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
           country: address.country,
         },
       },
-      automatic_payment_methods: { enabled: true },
       metadata: {
         orderId: req.body.orderId || "",
-        base: String(base),
-        shipping: String(shipping),
+        subtotal: String(amountSubtotal),
         tax: String(tax),
+        platformFee: String(platformFee),
+        taxScope,
+        calcId: calc.id,
+      },
+    };
+
+    // NO automatic_tax on PI (we precomputed tax)
+    if (usePreview) {
+      // requires Stripe PI+Tax preview API
+      piParams.hooks = { inputs: { tax: { calculation: calc.id } } };
+    }
+
+    const idempotencyKey =
+      (req.body.orderId ? `pi_${req.body.orderId}` : `pi_${Date.now()}`) +
+      (usePreview ? "_preview" : "_static");
+
+    const pi = await stripe.paymentIntents.create(piParams, { idempotencyKey });
+
+    return res.json({
+      ok: true,
+      clientSecret: pi.client_secret,
+      totals: {
+        currency,
+        subtotal: amountSubtotal,
+        tax,
+        platformFee,
+        grandTotal: pi.amount,
+      },
+      routing: {
+        sellerNet,                // what the seller receives
+        platformAppFee: appFee,   // tax + platformFee
+        // for clarity:
+        // sellerNet == amountTotal - (tax + platformFee) == amountSubtotal - platformFee
+      },
+      tax: {
+        scope: taxScope,
+        calculationId: calc.id,
+        previewLinkedToPI: !!usePreview,
       },
     });
-
-    return res.json({ clientSecret: pi.client_secret, total, tax, sellerShare, platformFee });
   } catch (e) {
     console.error("create-payment-intent error", e);
     return res.status(500).json({ error: "Internal Server Error" });
