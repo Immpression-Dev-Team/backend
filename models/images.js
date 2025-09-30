@@ -122,6 +122,11 @@ const ImageSchema = new Schema(
       type: String,
       default: "",
     },
+    soldStatus: {
+      type: String,
+      enum: ["unsold", "sold"],
+      default: "unsold",
+    },    
   },
   { timestamps: true }
 );

@@ -159,11 +159,11 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
 
     const skip = (page - 1) * limit;
 
-    // Include `userId` in the response
+    // Include soldStatus and everything else you already return
     const images = await ImageModel.find(query)
       .limit(limit)
       .skip(skip)
-      .select('_id userId artistName name description price imageLink views category createdAt stage dimensions weight isSigned isFramed');
+      .select('_id userId artistName name description price imageLink views category createdAt stage dimensions weight isSigned isFramed soldStatus');
 
     if (images.length === 0 && page > 1) {
       return response.status(200).json({ success: true, images: [] });
@@ -172,19 +172,29 @@ router.get('/all_images', isUserAuthorized, async (request, response) => {
     const totalImages = await ImageModel.countDocuments(query);
     const totalPages = Math.ceil(totalImages / limit);
 
+    // add convenience boolean for the app
+    const withSoldFlag = images.map((img) => {
+      const o = img.toObject();
+      return {
+        ...o,
+        isSold: String(o.soldStatus || '').toLowerCase() === 'sold',
+      };
+    });
+
     response.status(200).json({
       success: true,
       totalPages: totalPages,
       currentPage: parseInt(page),
       pageCount: limit,
       totalImages: totalImages,
-      images,
+      images: withSoldFlag,
     });
   } catch (error) {
     console.error('Error fetching images:', error);
     response.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
+
 
 // Route to fetch all images liked by the current user
 router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
@@ -194,7 +204,7 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
     const user = await UserModel.findById(userId)
       .populate({
         path: 'likedImages',
-        select: '_id name imageLink description price category createdAt userId',
+        select: '_id name imageLink description price category createdAt userId soldStatus',
         populate: { path: 'userId', select: 'name' },
       })
       .select('likedImages');
@@ -203,8 +213,7 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    // Handle missing userId (artist) gracefully
-    const formattedImages = user.likedImages.map(image => ({
+    const formattedImages = user.likedImages.map((image) => ({
       _id: image._id,
       name: image.name,
       imageLink: image.imageLink,
@@ -212,7 +221,9 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
       price: image.price,
       category: image.category,
       createdAt: image.createdAt,
-      artist: { name: image.userId?.name || 'Unknown Artist' } // handle missing userId
+      artist: { name: image.userId?.name || 'Unknown Artist' },
+      soldStatus: image.soldStatus,
+      isSold: String(image.soldStatus || '').toLowerCase() === 'sold',
     }));
 
     res.status(200).json({
@@ -225,16 +236,14 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
   }
 });
 
+
 // GET route for fetching an image by ID
 router.get('/image/:id', isUserAuthorized, async (request, response) => {
   try {
-    // Getting the userId from the authenticated user
     const userId = request.user._id;
-
-    // Get the image ID from the request parameters
     const imageId = request.params.id;
 
-    // Find the image in the database by its ID and user ID
+    // Note: this restricts to the owner’s images. If you want this to be public, remove { userId }
     const image = await ImageModel.findOne({ _id: imageId, userId: userId });
 
     if (!image) {
@@ -243,7 +252,6 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
         .json({ success: false, error: 'Image not found' });
     }
 
-    // Prepare the response object
     const responseData = {
       _id: image._id,
       artistName: image.artistName,
@@ -253,15 +261,17 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
       imageLink: image.imageLink,
       category: image.category,
       views: image.views,
+      soldStatus: image.soldStatus,
+      isSold: String(image.soldStatus || '').toLowerCase() === 'sold',
     };
 
-    // Send the combined JSON response
     response.json(responseData);
   } catch (err) {
     console.error(err);
     response.status(500).json({ success: false, error: err.message });
   }
 });
+
 
 // Route to update an image by id
 router.patch(
@@ -386,7 +396,7 @@ router.delete('/image/:id', isUserAuthorized, async (request, response) => {
 // Route to get all images for the authenticated user
 router.get('/images', isUserAuthorized, async (request, response) => {
   try {
-    const userId = request.user._id; // Use _id instead of id
+    const userId = request.user._id;
     const { stage } = request.query;
 
     const query = { userId };
@@ -400,14 +410,24 @@ router.get('/images', isUserAuthorized, async (request, response) => {
       query.stage = stage;
     }
 
-    const images = await ImageModel.find(query).select('_id name imageLink stage');
+    const images = await ImageModel.find(query)
+      .select('_id name imageLink stage soldStatus');
 
-    response.status(200).json({ success: true, images });
+    const withSoldFlag = images.map((img) => {
+      const o = img.toObject();
+      return {
+        ...o,
+        isSold: String(o.soldStatus || '').toLowerCase() === 'sold',
+      };
+    });
+
+    response.status(200).json({ success: true, images: withSoldFlag });
   } catch (error) {
     console.error('Error fetching images:', error);
     response.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
+
 
 // // Route to update the view count of an image by id
 // router.patch('/viewcount/:id/', isUserAuthorized, async (request, response) => {
