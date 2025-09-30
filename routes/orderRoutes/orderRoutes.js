@@ -527,6 +527,7 @@ router.get("/orderDetails/:id", async (req, res) => {
   }
 });
 
+// CREATE ORDER
 router.post("/order", isUserAuthorized, async (req, res) => {
   try {
     const { imageId, artName, artistName, price, imageLink, deliveryDetails } = req.body;
@@ -541,13 +542,18 @@ router.post("/order", isUserAuthorized, async (req, res) => {
       return res.status(404).json({ success: false, error: "Image not found." });
     }
 
-    // Assuming the image doc has the owner at image.userId (change if yours is different)
+    // 🚫 New guard: don't allow ordering items already sold
+    if (image.soldStatus === "sold") {
+      return res.status(400).json({ success: false, error: "This artwork is already sold." });
+    }
+
+    // Assuming the image doc has the owner at image.userId
     const artistUserId = image.userId;
     if (!artistUserId) {
       return res.status(400).json({ success: false, error: "Image has no associated artist." });
     }
 
-    // Get artist’s Stripe connect account (if you store it on the user)
+    // Get artist’s Stripe connect account
     const artist = await UserModel.findById(artistUserId).lean();
     if (!artist || !artist.stripeAccountId) {
       return res.status(400).json({ success: false, error: "Artist not connected to Stripe." });
@@ -563,26 +569,14 @@ router.post("/order", isUserAuthorized, async (req, res) => {
       userAccountName: req.user.name,
       userId: req.user._id,
 
-      // ✅ these two fields satisfy your schema validation
-      artistUserId,                      // required in your schema
+      // ✅ schema-required fields
+      artistUserId,
       artistStripeId: artist.stripeAccountId,
 
       status: "pending",
     });
 
     await newOrder.save();
-
-    // Fire notification to the seller (artist)
-    Notification.create({
-      recipientUserId: artistUserId,     // seller
-      actorUserId: req.user._id,         // buyer
-      type: NOTIFICATION_TYPE.DELIVERY_DETAILS_SUBMITTED,
-      title: "New order started",
-      message: `A buyer submitted delivery details for “${artName}”.`,
-      orderId: newOrder._id,
-      imageId: imageId,
-      data: { artName, artistName, price, imageLink },
-    }).catch(err => console.error("Notif create error:", err));
 
     res.status(201).json({
       success: true,
@@ -595,6 +589,7 @@ router.post("/order", isUserAuthorized, async (req, res) => {
     res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
+
 
 // POST /orders/calculate-tax
 router.post("/calculate-tax", async (req, res) => {
@@ -654,117 +649,163 @@ router.post("/calculate-tax", async (req, res) => {
   }
 });
 
+// POST /finalize-payment
+router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
+  try {
+    const { paymentIntentId, orderId: orderIdFromClient } = req.body || {};
+    if (!paymentIntentId && !orderIdFromClient) {
+      return res.status(400).json({ success: false, error: "paymentIntentId or orderId required" });
+    }
+
+    // 1) Read PI from Stripe (if we have it)
+    let pi = null;
+    if (paymentIntentId) {
+      try {
+        pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+      } catch (e) {
+        return res.status(400).json({ success: false, error: "Invalid paymentIntentId" });
+      }
+    }
+
+    // 2) Resolve orderId (prefer Stripe metadata)
+    const orderId = (pi?.metadata?.orderId || orderIdFromClient || "").trim();
+    if (!orderId) {
+      return res.status(400).json({ success: false, error: "orderId missing (not in metadata nor body)" });
+    }
+
+    // 3) Load order
+    const order = await OrderModel.findById(orderId);
+    if (!order) return res.status(404).json({ success: false, error: "Order not found" });
+
+    // Caller must be buyer or seller
+    const isBuyer = String(order.userId) === String(req.user._id);
+    const isSeller = String(order.artistUserId) === String(req.user._id);
+    if (!isBuyer && !isSeller) {
+      return res.status(403).json({ success: false, error: "Not allowed" });
+    }
+
+    // 4) If already finalized, return success (idempotent)
+    if (order.status === "paid" && order.paymentIntentId) {
+      return res.json({ success: true, message: "Order already finalized", data: { orderId: order._id } });
+    }
+
+    // 5) If we have a PI, ensure it succeeded
+    if (pi) {
+      const status = String(pi.status || "").toLowerCase();
+      if (status !== "succeeded") {
+        // Not ready yet — let client retry/poll
+        return res.status(202).json({
+          success: false,
+          error: "Payment not succeeded yet",
+          data: { status, nextAction: pi.next_action || null }
+        });
+      }
+    } else {
+      // No PI provided; as a safeguard you could check your own records/logs here if you store them
+      return res.status(400).json({ success: false, error: "paymentIntentId required to verify success" });
+    }
+
+    // 6) Apply DB changes (same as your webhook)
+    order.status = "paid";
+    order.paymentIntentId = pi.id;
+    order.paidAt = new Date();
+
+    await order.save();
+
+    // Flip the image to SOLD (idempotent)
+    await ImageModel.findOneAndUpdate(
+      { _id: order.imageId, soldStatus: { $ne: "sold" } },
+      { soldStatus: "sold" },
+      { new: true }
+    );
+
+    // Notifications (idempotent-enough for UX; duplicates are unlikely in practice)
+    await Notification.create({
+      recipientUserId: order.userId,           // buyer
+      actorUserId: order.artistUserId,         // seller
+      type: NOTIFICATION_TYPE.ORDER_PAID,
+      title: "Payment successful",
+      message: `You purchased “${order.artName}”. We'll notify you when it ships.`,
+      orderId: order._id,
+      imageId: order.imageId,
+      data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+    });
+
+    await Notification.create({
+      recipientUserId: order.artistUserId, // seller
+      actorUserId: order.userId,           // buyer
+      type: NOTIFICATION_TYPE.ORDER_PAID,
+      title: "Payment received",
+      message: `Payment confirmed for "${order.artName}".`,
+      orderId: order._id,
+      imageId: order.imageId,
+      data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+    });
+
+    // Optional: a separate "needs shipping" nudge
+    await Notification.create({
+      recipientUserId: order.artistUserId,
+      actorUserId: order.userId,
+      type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
+      title: "Action needed: Ship order",
+      message: `"${order.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
+      orderId: order._id,
+      imageId: order.imageId,
+      data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
+    });
+
+    return res.json({ success: true, message: "Order finalized", data: { orderId: order._id } });
+  } catch (err) {
+    console.error("finalize-payment error:", err);
+    return res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
 
 // POST /orders/create-payment-intent
-// Body options:
-//   Legacy: { sellerStripeId, base, shipping, platformFee?, address, orderId? }
-//   Items : { sellerStripeId, items:[{amount, quantity?, reference?, tax_code?, tax_behavior?}],
-//             shipping:{amount?}, platformFee?, address, orderId?, useTaxPreview? }
-//
-// Env flags:
-//   STRIPE_TAX_SCOPE      = "platform" | "connected"   (default "platform")
-//   STRIPE_TAX_PI_PREVIEW = "1"                        (enable PI+Tax preview hook)
-
 router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
   try {
     const currency = "usd";
-    const seller = String(req.body.sellerStripeId || "").trim();
-    if (!seller) return res.status(400).json({ error: "sellerStripeId required" });
-
+    const seller = String(req.body.sellerStripeId || "");
+    const base = Math.round(Number(req.body.base));
+    const shipping = Math.round(Number(req.body.shipping || 0));
+    const platformFee = Math.round(Number(req.body.platformFee || 0));
     const address = normAddr(req.body.address || {});
+
+    if (!seller) return res.status(400).json({ error: "sellerStripeId required" });
+    if (!Number.isFinite(base) || base <= 0) return res.status(400).json({ error: "Invalid base" });
     if (!address.postal_code) return res.status(400).json({ error: "postal_code required" });
 
-    const platformFee = Math.max(0, Math.round(Number(req.body.platformFee || 0)));
-
-    // ---- inputs: items[] or legacy base+shipping ----
-    let items = Array.isArray(req.body.items) ? req.body.items : null;
-
-    if (items && items.length) {
-      items = items.map((it, i) => ({
-        amount: Math.round(Number(it.amount)),
-        quantity: Math.max(1, Number(it.quantity || 1)),
-        reference: safeTaxRef(it.reference, `item_${i + 1}`), // avoid reserved "shipping"
-        tax_code: it.tax_code,
-        tax_behavior: it.tax_behavior || "exclusive",
-      }));
-      if (!items.every(it => Number.isFinite(it.amount) && it.amount > 0)) {
-        return res.status(400).json({ error: "items[].amount must be positive integer cents" });
-      }
-      const shipAmt = Math.round(Number(req.body?.shipping?.amount || 0));
-      if (shipAmt > 0) {
-        items.push({ amount: shipAmt, quantity: 1, reference: "shipping_cost", tax_behavior: "exclusive" });
-      }
-    } else {
-      const base = Math.round(Number(req.body.base));
-      const shipping = Math.max(0, Math.round(Number(req.body.shipping || 0)));
-      if (!Number.isFinite(base) || base <= 0) return res.status(400).json({ error: "Invalid base" });
-      items = [
-        { amount: base, quantity: 1, reference: "artwork", tax_behavior: "exclusive" },
-        ...(shipping > 0
-          ? [{ amount: shipping, quantity: 1, reference: "shipping_cost", tax_behavior: "exclusive" }]
-          : []),
-      ];
-    }
-
-    // ---- where to create the Tax Calculation ----
-    const taxScope = (process.env.STRIPE_TAX_SCOPE || "platform").toLowerCase();
-    const calcOpts = taxScope === "connected" ? { stripeAccount: seller } : undefined;
-
-    // ---- Stripe Tax Calculation ----
+    // Recompute tax on server
     const calc = await stripe.tax.calculations.create({
       currency,
-      line_items: items.map(li => ({
-        amount: li.amount,
-        quantity: li.quantity,
-        reference: li.reference,
-        tax_code: li.tax_code,
-        tax_behavior: li.tax_behavior || "exclusive",
-      })),
+      line_items: [
+        { amount: base, reference: "artwork", tax_behavior: "exclusive" },
+        ...(shipping > 0
+          ? [{ amount: shipping, reference: "shipping_cost", tax_behavior: "exclusive" }]
+          : []),
+      ],
       customer_details: { address, address_source: "shipping" },
-      expand: ["line_items.data.tax_breakdown", "tax_breakdown"],
-    }, calcOpts);
+    });
 
-    // ---- totals (with fallback if amount_subtotal missing on your API ver) ----
-    const amountTotal = Number(calc.amount_total);                  // authoritative total (cents)
-    const taxExclusive = Number(calc.tax_amount_exclusive || 0);
-    const taxInclusive = Number(calc.tax_amount_inclusive || 0);
-    const tax = taxExclusive + taxInclusive;
-    const amountSubtotal = Number.isFinite(Number(calc.amount_subtotal))
-      ? Number(calc.amount_subtotal)
-      : (amountTotal - tax);
+    const tax = calc.tax_amount_exclusive
+      ?? calc.tax_amount_inclusive
+      ?? (calc.amount_total - calc.amount_subtotal);
 
-    if (![amountTotal, amountSubtotal, tax].every(Number.isFinite)) {
-      console.error("Tax calc bad numbers:", {
-        amount_total: calc.amount_total,
-        amount_subtotal: calc.amount_subtotal,
-        tax_exclusive: calc.tax_amount_exclusive,
-        tax_inclusive: calc.tax_amount_inclusive,
-      });
-      return res.status(502).json({ error: "Stripe tax calculation returned invalid amounts" });
-    }
+    const total = base + shipping + tax;
 
-    // Platform collects: tax + platformFee (as application fee)
-    const appFee = Math.max(0, tax + platformFee);
-    // Seller receives: total - appFee  ==  (subtotal - platformFee)
-    const sellerNet = amountTotal - appFee;
+    // Seller gets pre-tax share minus platform fee. Remainder (tax + fee) stays on platform.
+    const sellerShare = Math.max(0, base + shipping - platformFee);
+    const remainderToPlatform = total - sellerShare; // = tax + platformFee
 
-    // ---- optional PI+Tax preview linkage ----
-    const usePreview =
-      String(req.body.useTaxPreview || "").trim() === "1" ||
-      String(process.env.STRIPE_TAX_PI_PREVIEW || "").trim() === "1";
-
-    // ---- PaymentIntent params (destination charge + application_fee_amount) ----
-    const piParams = {
-      amount: amountTotal,
+    const pi = await stripe.paymentIntents.create({
+      amount: total,
       currency,
-      automatic_payment_methods: { enabled: true },
-
-      // Destination charge: send to seller; DO NOT include transfer_data.amount
-      transfer_data: { destination: seller },
-
-      // Platform collects tax + platform fee as application fee
-      ...(appFee > 0 ? { application_fee_amount: appFee } : {}),
-
+      transfer_data: {
+        destination: seller,
+        amount: sellerShare,
+      },
+      // DO NOT include application_fee_amount when transfer_data.amount is present
       shipping: {
         name: address.name || req.user?.name || "Customer",
         address: {
@@ -775,56 +816,24 @@ router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
           country: address.country,
         },
       },
+      automatic_payment_methods: { enabled: true },
       metadata: {
         orderId: req.body.orderId || "",
-        subtotal: String(amountSubtotal),
+        base: String(base),
+        shipping: String(shipping),
         tax: String(tax),
         platformFee: String(platformFee),
-        taxScope,
-        calcId: calc.id,
-      },
-    };
-
-    // NO automatic_tax on PI (we precomputed tax)
-    if (usePreview) {
-      // requires Stripe PI+Tax preview API
-      piParams.hooks = { inputs: { tax: { calculation: calc.id } } };
-    }
-
-    const idempotencyKey =
-      (req.body.orderId ? `pi_${req.body.orderId}` : `pi_${Date.now()}`) +
-      (usePreview ? "_preview" : "_static");
-
-    const pi = await stripe.paymentIntents.create(piParams, { idempotencyKey });
-
-    return res.json({
-      ok: true,
-      clientSecret: pi.client_secret,
-      totals: {
-        currency,
-        subtotal: amountSubtotal,
-        tax,
-        platformFee,
-        grandTotal: pi.amount,
-      },
-      routing: {
-        sellerNet,                // what the seller receives
-        platformAppFee: appFee,   // tax + platformFee
-        // for clarity:
-        // sellerNet == amountTotal - (tax + platformFee) == amountSubtotal - platformFee
-      },
-      tax: {
-        scope: taxScope,
-        calculationId: calc.id,
-        previewLinkedToPI: !!usePreview,
+        sellerShare: String(sellerShare),
+        remainderToPlatform: String(remainderToPlatform),
       },
     });
+
+    return res.json({ clientSecret: pi.client_secret, total, tax, sellerShare, platformFee });
   } catch (e) {
     console.error("create-payment-intent error", e);
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
 
 router.post("/payout", async (req, res) => {
   try {
@@ -943,12 +952,13 @@ router.post("/create-stripe-account", async (req, res) => {
 // });
 // Webhook handler for Stripe events
 
+// STRIPE WEBHOOK (MUST use raw body)
 router.post(
   "/webhook",
   express.raw({ type: "application/json" }),
   async (req, res) => {
     const sig = req.headers["stripe-signature"];
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET; // looks like: whsec_...
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET; // whsec_...
 
     let event;
     try {
@@ -958,10 +968,6 @@ router.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Optional: idempotency guard if you store processed event IDs
-    // const already = await WebhookEventModel.findOne({ eventId: event.id });
-    // if (already) return res.json({ received: true });
-
     try {
       switch (event.type) {
         case "payment_intent.succeeded": {
@@ -969,20 +975,44 @@ router.post(
           const orderId = pi.metadata?.orderId;
 
           if (orderId) {
+            // 1) mark the order as paid (note: schema uses 'status' only)
             await OrderModel.findOneAndUpdate(
               { _id: orderId },
               {
                 status: "paid",
-                paymentStatus: "paid",
                 paymentIntentId: pi.id,
                 paidAt: new Date(),
               }
             );
 
             try {
+              // 2) fetch the order to get image/user IDs
               const paidOrder = await OrderModel.findById(orderId).lean();
               if (paidOrder) {
-                // Notify seller: payment received
+                // 2a) flip the image to SOLD (idempotent)
+                await ImageModel.findOneAndUpdate(
+                  { _id: paidOrder.imageId, soldStatus: { $ne: "sold" } },
+                  { soldStatus: "sold" },
+                  { new: true }
+                );
+
+                // 2b) notify the buyer: success
+                await Notification.create({
+                  recipientUserId: paidOrder.userId,           // buyer
+                  actorUserId: paidOrder.artistUserId,         // seller
+                  type: NOTIFICATION_TYPE.ORDER_PAID,
+                  title: "Payment successful",
+                  message: `You purchased “${paidOrder.artName}”. We'll notify you when it ships.`,
+                  orderId: paidOrder._id,
+                  imageId: paidOrder.imageId,
+                  data: {
+                    artName: paidOrder.artName,
+                    price: paidOrder.price,
+                    imageLink: paidOrder.imageLink,
+                  },
+                });
+
+                // 2c) notify the seller: payment received
                 await Notification.create({
                   recipientUserId: paidOrder.artistUserId, // seller
                   actorUserId: paidOrder.userId,           // buyer
@@ -998,10 +1028,10 @@ router.post(
                   },
                 });
 
-                // Notify seller: needs shipping
+                // 2d) notify the seller: needs shipping
                 await Notification.create({
-                  recipientUserId: paidOrder.artistUserId, // seller
-                  actorUserId: paidOrder.userId,           // buyer
+                  recipientUserId: paidOrder.artistUserId,
+                  actorUserId: paidOrder.userId,
                   type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
                   title: "Action needed: Ship order",
                   message: `"${paidOrder.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
@@ -1015,14 +1045,14 @@ router.post(
                 });
               }
             } catch (nErr) {
-              console.error("⚠️ Notification create error (paid):", nErr);
+              console.error("⚠️ post-payment actions error:", nErr);
             }
           }
           break;
         }
 
         case "payment_intent.payment_failed": {
-          const pi = event.data.object; // PaymentIntent
+          const pi = event.data.object;
           const orderId = pi.metadata?.orderId;
 
           if (orderId) {
@@ -1030,7 +1060,6 @@ router.post(
               { _id: orderId },
               {
                 status: "failed",
-                paymentStatus: "failed",
                 paymentIntentId: pi.id,
                 failureReason: pi.last_payment_error?.message,
               }
@@ -1040,7 +1069,7 @@ router.post(
         }
 
         case "charge.refunded": {
-          const charge = event.data.object; // Charge
+          const charge = event.data.object;
           const paymentIntentId = charge.payment_intent;
 
           if (paymentIntentId) {
@@ -1048,26 +1077,24 @@ router.post(
               { paymentIntentId },
               {
                 status: "refunded",
-                paymentStatus: "refunded",
                 refundedAt: new Date(),
               }
             );
+
+            // OPTIONAL: If you want to re-list on refund, uncomment:
+            // const order = await OrderModel.findOne({ paymentIntentId }).lean();
+            // if (order) {
+            //   await ImageModel.updateOne({ _id: order.imageId }, { soldStatus: "unsold" });
+            //   // (Optional) send refund notifications
+            // }
           }
           break;
         }
 
-        // You can handle more event types here if needed:
-        // case "account.updated":
-        // case "payout.paid":
-        // ...
-
         default:
-          // For unhandled events, just acknowledge
+          // acknowledge unhandled events
           break;
       }
-
-      // Optional: record processed event ID for idempotency
-      // await WebhookEventModel.create({ eventId: event.id, type: event.type });
 
       return res.json({ received: true });
     } catch (err) {
@@ -1076,6 +1103,7 @@ router.post(
     }
   }
 );
+
 
 router.post("/check-stripe-status", async (req, res) => {
   try {
@@ -1203,12 +1231,12 @@ router.get("/my-orders", isUserAuthorized, async (req, res) => {
 });
 
 
+// UPDATE ORDER (buyer/seller allowed as you enforce elsewhere)
 router.put("/order/:id", isUserAuthorized, async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      paymentStatus,
-      status,
+      status,           // use this (schema has: pending | paid | failed | refunded)
       deliveryDetails,
       price,
       artName,
@@ -1225,9 +1253,8 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
       });
     }
 
-    // Create update object with only provided fields
+    // Only assign fields your schema actually stores
     const updateData = {};
-    if (paymentStatus) updateData.paymentStatus = paymentStatus;
     if (status) updateData.status = status;
     if (deliveryDetails) updateData.deliveryDetails = deliveryDetails;
     if (price) updateData.price = price;
@@ -1235,7 +1262,6 @@ router.put("/order/:id", isUserAuthorized, async (req, res) => {
     if (artistName) updateData.artistName = artistName;
     if (transactionId) updateData.transactionId = transactionId;
 
-    // Update the order
     const updatedOrder = await OrderModel.findByIdAndUpdate(
       id,
       { $set: updateData },
