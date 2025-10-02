@@ -2483,6 +2483,134 @@ router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
   }
 });
 
+// utils
+const posInt = (n) => Math.max(0, Math.round(Number(n || 0)));
+
+// PREVIEW seller payout for an order (no money moves)
+router.get("/order/:id/payout-preview", isAdminAuthorized, async (req, res) => {
+  try {
+    const order = await OrderModel.findById(req.params.id).lean();
+    if (!order) return res.status(404).json({ success: false, error: "Order not found" });
+    if (!order.paymentIntentId || !order.chargeId)
+      return res.status(400).json({ success: false, error: "Order has no charge yet" });
+
+    // Pull charge w/ balance transaction to read Stripe fees & net
+    const charge = await stripe.charges.retrieve(order.chargeId, { expand: ["balance_transaction"] });
+    const bt = charge.balance_transaction;
+    if (!bt) return res.status(409).json({ success: false, error: "Balance transaction not ready yet" });
+
+    const base     = posInt(order.baseAmount ?? order.price);
+    const shipping = posInt(order.shippingAmount);
+    const tax      = posInt(order.taxAmount);
+    const stripeFee = posInt(bt.fee);
+    const net       = posInt(bt.net);  // gross - stripeFee
+
+    const platformHoldOnBase = Math.round(base * 0.03); // 3%
+    const sellerTarget = Math.max(0, (net - tax) - platformHoldOnBase);
+    const alreadySent  = posInt(order.sellerTransferredCents || 0);
+    const remaining    = Math.max(0, sellerTarget - alreadySent);
+
+    return res.json({
+      success: true,
+      data: {
+        amounts: { base, shipping, tax, total: posInt(order.totalAmount) },
+        stripe:  { fee: stripeFee, net },
+        policy:  { platformHoldOnBase },
+        seller:  { target: sellerTarget, alreadySent, remaining }
+      }
+    });
+  } catch (err) {
+    console.error("payout-preview error:", err);
+    return res.status(500).json({ success: false, error: "Preview failed" });
+  }
+});
+
+
+// PAY OUT remaining amount to the seller
+// POST /order/:id/payout  (admin/automated)
+// body: { amountCents? }  // optional cap; otherwise pays full remaining
+router.post("/order/:id/payout", isAdminAuthorized, async (req, res) => {
+  try {
+    const order = await OrderModel.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, error: "Order not found" });
+    if ((order.status || "").toLowerCase() !== "paid")
+      return res.status(400).json({ success: false, error: "Order not paid" });
+    if (!order.artistStripeId)
+      return res.status(400).json({ success: false, error: "Seller not connected to Stripe" });
+    if (!order.chargeId)
+      return res.status(400).json({ success: false, error: "Order chargeId missing" });
+
+    // Read Stripe fee + net from the charge’s balance transaction
+    const charge = await stripe.charges.retrieve(order.chargeId, { expand: ["balance_transaction"] });
+    const bt = charge.balance_transaction;
+    if (!bt) return res.status(409).json({ success: false, error: "Balance transaction not available yet" });
+
+    const base     = posInt(order.baseAmount ?? order.price);
+    const shipping = posInt(order.shippingAmount);
+    const tax      = posInt(order.taxAmount);
+    const stripeFee = posInt(bt.fee);
+    const net       = posInt(bt.net);
+
+    // Policy: hold 100% of tax + 3% of base; pay remainder after Stripe fee
+    const platformHoldOnBase = Math.round(base * 0.03);
+    const sellerTarget = Math.max(0, (net - tax) - platformHoldOnBase);
+
+    // Respect previous partial payouts
+    const alreadySent = posInt(order.sellerTransferredCents || 0);
+    let remaining = Math.max(0, sellerTarget - alreadySent);
+
+    // Optional cap (e.g., to split into chunks)
+    const cap = posInt(req.body?.amountCents);
+    if (cap > 0) remaining = Math.min(remaining, cap);
+
+    if (remaining === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "Nothing to pay (already paid out or not enough net funds).",
+        data: { sellerTarget, alreadySent, remaining: 0 }
+      });
+    }
+
+    // Create transfer linked to the original charge
+    const transferGroup = order.transferGroup || `order_${order._id}`;
+    const idempotencyKey = `transfer_order_${order._id}_${alreadySent + remaining}`;
+
+    const transfer = await stripe.transfers.create({
+      amount: remaining,
+      currency: "usd",
+      destination: order.artistStripeId,
+      transfer_group: transferGroup,
+      source_transaction: order.chargeId, // ensures funds come from this charge when available
+      metadata: {
+        orderId: String(order._id),
+        base: String(base),
+        shipping: String(shipping),
+        tax: String(tax),
+        stripeFee: String(stripeFee),
+        platformHoldOnBase: String(platformHoldOnBase)
+      }
+    }, { idempotencyKey });
+
+    // Bookkeeping
+    order.sellerTransferredCents = (order.sellerTransferredCents || 0) + remaining;
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        transfer,
+        seller: {
+          target: sellerTarget,
+          alreadySent: order.sellerTransferredCents,
+          remaining: Math.max(0, sellerTarget - order.sellerTransferredCents)
+        }
+      }
+    });
+  } catch (error) {
+    console.error("Error creating payout:", error);
+    return res.status(500).json({ success: false, error: error.message || "Payout failed" });
+  }
+});
 
 
 // Expose both POST and GET so Vercel Cron (GET) works
