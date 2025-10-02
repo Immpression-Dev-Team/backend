@@ -103,8 +103,14 @@ const Money = { type: Number, min: 0, default: 0 }; // cents, integers
 const OrderSchema = new Schema(
   {
     imageId: { type: Schema.Types.ObjectId, ref: "Image", required: true },
+
+    // ✅ added: used by endpoints & notifications
+    imageLink: { type: String, required: true },
+
     artName: { type: String, required: true },
-    artistName: { type: String },
+
+    // ✅ made required to match your /order validation
+    artistName: { type: String, required: true },
 
     artistUserId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     artistStripeId: { type: String, required: true },
@@ -117,9 +123,9 @@ const OrderSchema = new Schema(
     price: { type: Number, min: 0, required: true }, // cents (legacy base price)
 
     /** >>> New monetary fields (all cents) <<< */
-    baseAmount: { ...Money },     // mirrors `price` for now
-    shippingAmount: { ...Money }, // after calculation
-    taxAmount: { ...Money },      // after calculation
+    baseAmount: { ...Money },     // mirrors `price`
+    shippingAmount: { ...Money },
+    taxAmount: { ...Money },
     totalAmount: { ...Money },    // base + shipping + tax
 
     userAccountName: { type: String, required: true }, // buyer name at order time
@@ -131,7 +137,6 @@ const OrderSchema = new Schema(
       state: { type: String, required: true },
       zipCode: { type: String, required: true },
       country: { type: String, required: true },
-      // (optional) shippingCost, phone, etc.
     },
 
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true }, // buyer
@@ -143,24 +148,31 @@ const OrderSchema = new Schema(
       index: true,
     },
 
+    /** ===== Stripe refs ===== */
     paymentIntentId: { type: String },
     paidAt: { type: Date },
     refundedAt: { type: Date },
     failureReason: { type: String },
     transactionId: { type: String },
 
+    /** ===== Payout bookkeeping ===== */
+    chargeId: { type: String, index: true },          // Stripe charge id
+    transferGroup: { type: String, index: true },     // e.g. "order_<orderId>"
+    platformHoldOnBase: { ...Money },                 // 3% of base
+    sellerDueCents: { ...Money },                     // shipping + 97% base
+    sellerTransferredCents: { ...Money },             // amount already paid out
+
     shipping: { type: ShippingSchema, default: {} },
   },
   { timestamps: true }
 );
 
-/** Keep monetary fields in sync & enforce totalAmount */
+/** ===================== Pre-save ===================== */
 OrderSchema.pre("save", function (next) {
-  // If new fields are missing, seed them from legacy `price`
+  // Ensure baseAmount mirrors legacy `price`
   if (typeof this.baseAmount !== "number" || this.baseAmount < 0) {
     this.baseAmount = Math.max(0, Number(this.price || 0));
   }
-  // Keep legacy `price` mirrored from baseAmount if someone only set the new field
   if (typeof this.price !== "number" || this.price < 0) {
     this.price = Math.max(0, Number(this.baseAmount || 0));
   }
@@ -170,6 +182,20 @@ OrderSchema.pre("save", function (next) {
   const t = Math.max(0, Number(this.taxAmount || 0));
 
   this.totalAmount = b + s + t;
+
+  // Auto-calc payout fields if not set
+  const hold = Math.round(b * 0.03);
+  if (!this.platformHoldOnBase || this.platformHoldOnBase !== hold) {
+    this.platformHoldOnBase = hold;
+  }
+  const due = s + (b - hold);
+  if (!this.sellerDueCents || this.sellerDueCents !== due) {
+    this.sellerDueCents = due;
+  }
+  if (typeof this.sellerTransferredCents !== "number") {
+    this.sellerTransferredCents = 0;
+  }
+
   next();
 });
 
@@ -179,8 +205,12 @@ OrderSchema.index({ "shipping.aftershipTrackingId": 1 });
 OrderSchema.index({ "shipping.nextPollAt": 1, "shipping.shipmentStatus": 1 });
 OrderSchema.index({ userId: 1, createdAt: -1 });
 OrderSchema.index({ artistUserId: 1, createdAt: -1 });
+OrderSchema.index({ paymentIntentId: 1 }, { unique: true, sparse: true });
+OrderSchema.index({ chargeId: 1 }, { sparse: true });
+OrderSchema.index({ transferGroup: 1 });
 
 /** ===================== Exports ===================== */
-const OrderModel = mongoose.models.Order || mongoose.model("Order", OrderSchema);
+const OrderModel =
+  mongoose.models.Order || mongoose.model("Order", OrderSchema);
 export default OrderModel;
 export { ShippingSchema, TrackingEventSchema };

@@ -715,16 +715,14 @@ router.post("/calculate-tax", async (req, res) => {
 });
 
 
-// POST /orders/create-payment-intent  ✅ computes & saves base/shipping/tax/total on the order
+// POST /orders/create-payment-intent — platform holds funds (no auto transfer)
 router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
   try {
     const currency = "usd";
     const orderId = String(req.body.orderId || "");
-    const platformFee = Math.max(0, Math.round(Number(req.body.platformFee || 0)));
-
     if (!orderId) return res.status(400).json({ error: "orderId required" });
 
-    // Fetch order to get seller + address + base/shipping
+    // Fetch order
     const order = await OrderModel.findById(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
@@ -733,19 +731,22 @@ router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
       return res.status(403).json({ error: "Not allowed" });
     }
 
+    // Seller must exist (we won't transfer now, but we’ll store the ID for later)
     const seller = order.artistStripeId;
     if (!seller) return res.status(400).json({ error: "Artist Stripe account missing" });
 
+    // Address (for tax/shipping details)
     const address = normAddr(order.deliveryDetails || {});
     if (!address.postal_code) return res.status(400).json({ error: "postal_code required" });
 
-    // Use what’s already on the order (client may have run shipping quote earlier)
+    // Amounts already on the order (cents)
     const base = Math.max(0, Math.round(Number(order.baseAmount || order.price || 0)));
     const shipping = Math.max(0, Math.round(Number(order.shippingAmount || 0)));
+    if (!Number.isFinite(base) || base <= 0) {
+      return res.status(400).json({ error: "Invalid base amount on order" });
+    }
 
-    if (!Number.isFinite(base) || base <= 0) return res.status(400).json({ error: "Invalid base amount on order" });
-
-    // Compute tax fresh on server
+    // --- Compute tax fresh on server (cents) ---
     const calc = await stripe.tax.calculations.create({
       currency,
       line_items: [
@@ -764,26 +765,33 @@ router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
 
     const total = base + shipping + tax;
 
-    // Seller receives base + shipping minus platform fee (tax stays with platform)
-    const sellerShare = Math.max(0, base + shipping - platformFee);
-    const remainderToPlatform = total - sellerShare; // = tax + platformFee
+    // --- Your policy: hold tax + 3% of base; seller can get shipping + 97% of base ---
+    const platformHoldOnBase = Math.round(base * 0.03); // 3% of base
+    const sellerDueCents = shipping + (base - platformHoldOnBase); // what seller can receive later
 
-    // ✅ Persist breakdown on the order BEFORE creating PI (so UI is consistent)
+    // --- Persist breakdown BEFORE creating the PI (UI consistency) ---
     order.baseAmount = base;
     order.shippingAmount = shipping;
     order.taxAmount = tax;
     order.totalAmount = total;
     order.price = base; // legacy mirror
+
+    // bookkeeping for later payouts
+    order.platformHoldOnBase = platformHoldOnBase;                 // 3% of base
+    order.sellerDueCents = sellerDueCents;                         // shipping + 97% base
+    order.sellerTransferredCents = order.sellerTransferredCents || 0;
+
+    const transferGroup = `order_${orderId}`;
+    order.transferGroup = transferGroup;
     await order.save();
 
-    // Create PI that transfers sellerShare to connected account
+    // --- Create PI WITHOUT transfer_data/destination (funds stay on platform) ---
+    const idempotencyKey = `pi_order_${orderId}`; // prevents dupes on retry
     const pi = await stripe.paymentIntents.create({
       amount: total,
       currency,
-      transfer_data: {
-        destination: seller,
-        amount: sellerShare,
-      },
+      transfer_group: transferGroup, // lets you reference this payment when you transfer later
+      automatic_payment_methods: { enabled: true },
       shipping: {
         name: address.name || req.user?.name || "Customer",
         address: {
@@ -794,26 +802,27 @@ router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
           country: address.country,
         },
       },
-      automatic_payment_methods: { enabled: true },
       metadata: {
         orderId,
         base: String(base),
         shipping: String(shipping),
         tax: String(tax),
         total: String(total),
-        platformFee: String(platformFee),
-        sellerShare: String(sellerShare),
-        remainderToPlatform: String(remainderToPlatform),
+        platformHoldOnBase: String(platformHoldOnBase),
+        sellerDueCents: String(sellerDueCents),
+        transferGroup,
+        sellerStripeAccountId: seller, // reference only
       },
-    });
+    }, { idempotencyKey });
 
     return res.json({
       clientSecret: pi.client_secret,
-      total,
-      tax,
-      sellerShare,
-      platformFee,
       orderId,
+      totals: { base, shipping, tax, total },
+      policy: {
+        platformHoldOnBase,
+        sellerDueCents,
+      },
     });
   } catch (e) {
     console.error("create-payment-intent error", e);
@@ -939,7 +948,7 @@ router.post("/create-stripe-account", async (req, res) => {
 // });
 // Webhook handler for Stripe events
 
-// STRIPE WEBHOOK (raw body)
+// STRIPE WEBHOOK (raw body) — ensure this route is mounted with express.raw in your server file
 router.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   const sig = req.headers["stripe-signature"];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -958,42 +967,45 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
         const pi = event.data.object;
         const orderId = pi.metadata?.orderId;
 
-        if (orderId) {
-          // ✅ Pull the amounts we put in metadata (all are strings)
-          const base = Math.max(0, Math.round(Number(pi.metadata?.base || 0)));
-          const shipping = Math.max(0, Math.round(Number(pi.metadata?.shipping || 0)));
-          const tax = Math.max(0, Math.round(Number(pi.metadata?.tax || 0)));
-          const total = Math.max(0, Math.round(Number(pi.metadata?.total || base + shipping + tax)));
+        // NEW: capture charge id & transfer group
+        const chargeId = typeof pi.latest_charge === "string"
+          ? pi.latest_charge
+          : pi.latest_charge?.id;
 
+        const base = Math.max(0, Math.round(Number(pi.metadata?.base || 0)));
+        const shipping = Math.max(0, Math.round(Number(pi.metadata?.shipping || 0)));
+        const tax = Math.max(0, Math.round(Number(pi.metadata?.tax || 0)));
+        const total = Math.max(0, Math.round(Number(pi.metadata?.total || base + shipping + tax)));
+        const transferGroup = pi.metadata?.transferGroup || `order_${orderId}`;
+
+        if (orderId) {
           await OrderModel.findOneAndUpdate(
             { _id: orderId },
             {
               status: "paid",
               paymentIntentId: pi.id,
               paidAt: new Date(),
-
-              // ✅ persist new money fields
               baseAmount: base,
               shippingAmount: shipping,
               taxAmount: tax,
               totalAmount: total,
-
-              // legacy mirror
-              price: base,
+              price: base, // legacy mirror
+              // NEW:
+              transferGroup,
+              chargeId: chargeId || null,
             }
           );
 
+          // Post-payment side effects (mark sold + notifications) — unchanged from your version
           try {
             const paidOrder = await OrderModel.findById(orderId).lean();
             if (paidOrder) {
-              // mark image sold
               await ImageModel.findOneAndUpdate(
                 { _id: paidOrder.imageId, soldStatus: { $ne: "sold" } },
                 { soldStatus: "sold" },
                 { new: true }
               );
 
-              // notifications (unchanged text, now amounts exist on order)
               await Notification.create({
                 recipientUserId: paidOrder.userId,
                 actorUserId: paidOrder.artistUserId,
@@ -1002,11 +1014,7 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
                 message: `You purchased “${paidOrder.artName}”. We'll notify you when it ships.`,
                 orderId: paidOrder._id,
                 imageId: paidOrder.imageId,
-                data: {
-                  artName: paidOrder.artName,
-                  price: paidOrder.baseAmount, // show base price
-                  imageLink: paidOrder.imageLink,
-                },
+                data: { artName: paidOrder.artName, price: paidOrder.baseAmount, imageLink: paidOrder.imageLink },
               });
 
               await Notification.create({
@@ -1017,11 +1025,7 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
                 message: `Payment confirmed for "${paidOrder.artName}".`,
                 orderId: paidOrder._id,
                 imageId: paidOrder.imageId,
-                data: {
-                  artName: paidOrder.artName,
-                  price: paidOrder.baseAmount,
-                  imageLink: paidOrder.imageLink,
-                },
+                data: { artName: paidOrder.artName, price: paidOrder.baseAmount, imageLink: paidOrder.imageLink },
               });
 
               await Notification.create({
@@ -1032,11 +1036,7 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
                 message: `"${paidOrder.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
                 orderId: paidOrder._id,
                 imageId: paidOrder.imageId,
-                data: {
-                  artName: paidOrder.artName,
-                  price: paidOrder.baseAmount,
-                  imageLink: paidOrder.imageLink,
-                },
+                data: { artName: paidOrder.artName, price: paidOrder.baseAmount, imageLink: paidOrder.imageLink },
               });
             }
           } catch (nErr) {
@@ -1066,13 +1066,13 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
             { paymentIntentId },
             { status: "refunded", refundedAt: new Date() }
           );
-          // (optional) re-list art on refund
+          // (Optional) re-list art here if you want
         }
         break;
       }
 
       default:
-        // acknowledge others
+        // acknowledge all other events
         break;
     }
 
@@ -1082,6 +1082,7 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
     return res.status(500).json({ error: "Webhook processing failed" });
   }
 });
+
 
 
 router.post("/check-stripe-status", async (req, res) => {
@@ -2397,8 +2398,8 @@ router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
       return res.json({ success: true, data: { orderId: String(order._id), status: "already_paid" } });
     }
 
-    // Pull PI from Stripe and verify
-    const pi = await stripe.paymentIntents.retrieve(String(paymentIntentId));
+    // Pull PI (expand latest_charge so we can save chargeId)
+    const pi = await stripe.paymentIntents.retrieve(String(paymentIntentId), { expand: ["latest_charge"] });
     const status = String(pi?.status || "").toLowerCase();
     if (status !== "succeeded") {
       return res.status(400).json({ success: false, error: `PaymentIntent not succeeded (status=${status})` });
@@ -2409,6 +2410,10 @@ router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
     if (metaOrderId && metaOrderId !== String(orderId)) {
       return res.status(400).json({ success: false, error: "PaymentIntent metadata orderId mismatch" });
     }
+
+    // NEW: capture charge id & transfer group
+    const chargeId = typeof pi.latest_charge === "string" ? pi.latest_charge : pi.latest_charge?.id;
+    const transferGroup = pi.metadata?.transferGroup || `order_${orderId}`;
 
     // Use metadata amounts if available; keep integers (cents)
     const toPosInt = (v, def = 0) => {
@@ -2424,13 +2429,14 @@ router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
     order.status = "paid";
     order.paymentIntentId = pi.id;
     order.paidAt = new Date();
-
-    // Keep new fields + legacy mirror in sync
     order.baseAmount = baseCents;
     order.shippingAmount = shippingCents;
     order.taxAmount = taxCents;
     order.totalAmount = totalCents;
     order.price = baseCents; // legacy mirror
+    // NEW:
+    order.chargeId = chargeId || order.chargeId || null;
+    order.transferGroup = order.transferGroup || transferGroup;
 
     await order.save();
 
@@ -2442,45 +2448,31 @@ router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
     );
 
     // ✅ Notifications (best-effort)
-    const notifData = {
-      artName: order.artName,
-      price: order.baseAmount,
-      imageLink: order.imageLink,
-    };
-
+    const notifData = { artName: order.artName, price: order.baseAmount, imageLink: order.imageLink };
     await Promise.allSettled([
-      // Buyer: payment successful
       Notification.create({
         recipientUserId: order.userId,
         actorUserId: order.artistUserId,
         type: NOTIFICATION_TYPE.ORDER_PAID,
         title: "Payment successful",
         message: `You purchased “${order.artName}”. We'll notify you when it ships.`,
-        orderId: order._id,
-        imageId: order.imageId,
-        data: notifData,
+        orderId: order._id, imageId: order.imageId, data: notifData,
       }),
-      // Seller: payment received
       Notification.create({
         recipientUserId: order.artistUserId,
         actorUserId: order.userId,
         type: NOTIFICATION_TYPE.ORDER_PAID,
         title: "Payment received",
         message: `Payment confirmed for "${order.artName}".`,
-        orderId: order._id,
-        imageId: order.imageId,
-        data: notifData,
+        orderId: order._id, imageId: order.imageId, data: notifData,
       }),
-      // Seller: needs shipping
       Notification.create({
         recipientUserId: order.artistUserId,
         actorUserId: order.userId,
         type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
         title: "Action needed: Ship order",
         message: `"${order.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
-        orderId: order._id,
-        imageId: order.imageId,
-        data: notifData,
+        orderId: order._id, imageId: order.imageId, data: notifData,
       }),
     ]);
 
@@ -2490,6 +2482,7 @@ router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
     return res.status(500).json({ success: false, error: "Finalize payment failed" });
   }
 });
+
 
 
 // Expose both POST and GET so Vercel Cron (GET) works
