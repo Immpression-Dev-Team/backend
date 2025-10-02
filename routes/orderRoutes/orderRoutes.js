@@ -527,49 +527,86 @@ router.get("/orderDetails/:id", async (req, res) => {
   }
 });
 
-// CREATE ORDER
+// === helper (place near other small helpers) ===
+const toCents = (n) => Math.max(0, Math.round(Number(n || 0) * 100));
+
+// CREATE ORDER  ✅ expects `price` in **USD dollars**; stores cents in DB
 router.post("/order", isUserAuthorized, async (req, res) => {
   try {
-    const { imageId, artName, artistName, price, imageLink, deliveryDetails } = req.body;
+    const {
+      imageId,
+      artName,
+      artistName,
+      price,            // dollars (e.g., 1.00)
+      imageLink,
+      deliveryDetails,
+    } = req.body || {};
 
-    if (!imageId || !artName || !artistName || !price || !deliveryDetails) {
-      return res.status(400).json({ success: false, error: "Missing required order fields." });
+    // Validate required fields
+    const priceUsd = Number(price);
+    if (
+      !imageId ||
+      !artName ||
+      !artistName ||
+      !deliveryDetails ||
+      !Number.isFinite(priceUsd) ||
+      priceUsd <= 0
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Missing/invalid order fields." });
     }
 
-    // 🔎 Get the image & seller (artist)
+    // 🔎 Fetch image & seller (artist)
     const image = await ImageModel.findById(imageId).lean();
     if (!image) {
       return res.status(404).json({ success: false, error: "Image not found." });
     }
 
-    // 🚫 New guard: don't allow ordering items already sold
+    // 🚫 Prevent buying already sold art
     if (image.soldStatus === "sold") {
-      return res.status(400).json({ success: false, error: "This artwork is already sold." });
+      return res
+        .status(400)
+        .json({ success: false, error: "This artwork is already sold." });
     }
 
-    // Assuming the image doc has the owner at image.userId
     const artistUserId = image.userId;
     if (!artistUserId) {
-      return res.status(400).json({ success: false, error: "Image has no associated artist." });
+      return res
+        .status(400)
+        .json({ success: false, error: "Image has no associated artist." });
     }
 
-    // Get artist’s Stripe connect account
     const artist = await UserModel.findById(artistUserId).lean();
-    if (!artist || !artist.stripeAccountId) {
-      return res.status(400).json({ success: false, error: "Artist not connected to Stripe." });
+    if (!artist?.stripeAccountId) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Artist not connected to Stripe." });
     }
+
+    // ✅ Convert dollars → cents for storage/Stripe
+    const baseCents = toCents(priceUsd);
+    const shippingCents = 0; // filled later by shipping quote
+    const taxCents = 0;      // filled later by /calculate-tax or PI creation
 
     const newOrder = new OrderModel({
       imageId,
       artName,
       artistName,
-      price,
+
+      // money fields (all in cents)
+      price: baseCents,             // legacy mirror
+      baseAmount: baseCents,        // ✅ new canonical base
+      shippingAmount: shippingCents,
+      taxAmount: taxCents,
+      totalAmount: baseCents + shippingCents + taxCents,
+
       imageLink,
       deliveryDetails,
+
       userAccountName: req.user.name,
       userId: req.user._id,
 
-      // ✅ schema-required fields
       artistUserId,
       artistStripeId: artist.stripeAccountId,
 
@@ -578,7 +615,7 @@ router.post("/order", isUserAuthorized, async (req, res) => {
 
     await newOrder.save();
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Order created successfully.",
       order: newOrder,
@@ -586,18 +623,20 @@ router.post("/order", isUserAuthorized, async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating order:", error);
-    res.status(500).json({ success: false, error: "Internal Server Error" });
+    return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
 
 
-// POST /orders/calculate-tax
+
+// POST /orders/calculate-tax  ✅ computes for new fields; optional persist if orderId present
 router.post("/calculate-tax", async (req, res) => {
   try {
     const currency = (req.body.currency || "usd").toLowerCase();
-    const base = Math.round(Number(req.body.base));        // cents
-    const shipping = Math.round(Number(req.body.shipping || 0));
+    const base = Math.round(Number(req.body.base));               // cents
+    const shipping = Math.round(Number(req.body.shipping || 0));  // cents
     const address = normAddr(req.body.address || {});
+    const orderId = req.body.orderId || null; // optional: persist into that order
 
     if (!Number.isFinite(base) || base <= 0) {
       return res.status(400).json({ error: "Invalid base" });
@@ -606,177 +645,6 @@ router.post("/calculate-tax", async (req, res) => {
       return res.status(400).json({ error: "postal_code required" });
     }
 
-    // Build line_items (do not use "shipping" as reference)
-    const line_items = [{ amount: base, reference: "artwork", tax_behavior: "exclusive" }];
-    if (shipping > 0) {
-      line_items.push({ amount: shipping, reference: "shipping_cost", tax_behavior: "exclusive" });
-    }
-
-    // Stripe Tax on the PLATFORM (no {stripeAccount})
-    const calc = await stripe.tax.calculations.create({
-      currency,
-      line_items: [
-        { amount: base, tax_behavior: "exclusive", reference: "artwork" },
-        ...(shipping > 0
-          ? [{ amount: shipping, tax_behavior: "exclusive", reference: "shipping_cost" }]
-          : []),
-      ],
-      customer_details: { address, address_source: "shipping" },
-    });
-
-    const subtotal = base + shipping;
-    const itemTax = calc.tax_amount_exclusive
-      ?? calc.tax_amount_inclusive
-      ?? (calc.amount_total - calc.amount_subtotal);
-    const total = subtotal + itemTax;
-
-    return res.json({ ok: true, currency, base, shipping, tax: itemTax, total });
-  } catch (e) {
-    console.error("calculate-tax error", e);
-    // Soft fallback (return subtotal with 0 tax)
-    const currency = (req.body.currency || "usd").toLowerCase();
-    const base = Math.round(Number(req.body.base || 0));
-    const shipping = Math.round(Number(req.body.shipping || 0));
-    return res.status(200).json({
-      ok: true,
-      currency,
-      base,
-      shipping,
-      tax: 0,
-      total: base + shipping,
-      note: "tax_fallback_error",
-    });
-  }
-});
-
-// POST /finalize-payment
-router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
-  try {
-    const { paymentIntentId, orderId: orderIdFromClient } = req.body || {};
-    if (!paymentIntentId && !orderIdFromClient) {
-      return res.status(400).json({ success: false, error: "paymentIntentId or orderId required" });
-    }
-
-    // 1) Read PI from Stripe (if we have it)
-    let pi = null;
-    if (paymentIntentId) {
-      try {
-        pi = await stripe.paymentIntents.retrieve(paymentIntentId);
-      } catch (e) {
-        return res.status(400).json({ success: false, error: "Invalid paymentIntentId" });
-      }
-    }
-
-    // 2) Resolve orderId (prefer Stripe metadata)
-    const orderId = (pi?.metadata?.orderId || orderIdFromClient || "").trim();
-    if (!orderId) {
-      return res.status(400).json({ success: false, error: "orderId missing (not in metadata nor body)" });
-    }
-
-    // 3) Load order
-    const order = await OrderModel.findById(orderId);
-    if (!order) return res.status(404).json({ success: false, error: "Order not found" });
-
-    // Caller must be buyer or seller
-    const isBuyer = String(order.userId) === String(req.user._id);
-    const isSeller = String(order.artistUserId) === String(req.user._id);
-    if (!isBuyer && !isSeller) {
-      return res.status(403).json({ success: false, error: "Not allowed" });
-    }
-
-    // 4) If already finalized, return success (idempotent)
-    if (order.status === "paid" && order.paymentIntentId) {
-      return res.json({ success: true, message: "Order already finalized", data: { orderId: order._id } });
-    }
-
-    // 5) If we have a PI, ensure it succeeded
-    if (pi) {
-      const status = String(pi.status || "").toLowerCase();
-      if (status !== "succeeded") {
-        // Not ready yet — let client retry/poll
-        return res.status(202).json({
-          success: false,
-          error: "Payment not succeeded yet",
-          data: { status, nextAction: pi.next_action || null }
-        });
-      }
-    } else {
-      // No PI provided; as a safeguard you could check your own records/logs here if you store them
-      return res.status(400).json({ success: false, error: "paymentIntentId required to verify success" });
-    }
-
-    // 6) Apply DB changes (same as your webhook)
-    order.status = "paid";
-    order.paymentIntentId = pi.id;
-    order.paidAt = new Date();
-
-    await order.save();
-
-    // Flip the image to SOLD (idempotent)
-    await ImageModel.findOneAndUpdate(
-      { _id: order.imageId, soldStatus: { $ne: "sold" } },
-      { soldStatus: "sold" },
-      { new: true }
-    );
-
-    // Notifications (idempotent-enough for UX; duplicates are unlikely in practice)
-    await Notification.create({
-      recipientUserId: order.userId,           // buyer
-      actorUserId: order.artistUserId,         // seller
-      type: NOTIFICATION_TYPE.ORDER_PAID,
-      title: "Payment successful",
-      message: `You purchased “${order.artName}”. We'll notify you when it ships.`,
-      orderId: order._id,
-      imageId: order.imageId,
-      data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
-    });
-
-    await Notification.create({
-      recipientUserId: order.artistUserId, // seller
-      actorUserId: order.userId,           // buyer
-      type: NOTIFICATION_TYPE.ORDER_PAID,
-      title: "Payment received",
-      message: `Payment confirmed for "${order.artName}".`,
-      orderId: order._id,
-      imageId: order.imageId,
-      data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
-    });
-
-    // Optional: a separate "needs shipping" nudge
-    await Notification.create({
-      recipientUserId: order.artistUserId,
-      actorUserId: order.userId,
-      type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
-      title: "Action needed: Ship order",
-      message: `"${order.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
-      orderId: order._id,
-      imageId: order.imageId,
-      data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
-    });
-
-    return res.json({ success: true, message: "Order finalized", data: { orderId: order._id } });
-  } catch (err) {
-    console.error("finalize-payment error:", err);
-    return res.status(500).json({ success: false, error: "Internal Server Error" });
-  }
-});
-
-
-// POST /orders/create-payment-intent
-router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
-  try {
-    const currency = "usd";
-    const seller = String(req.body.sellerStripeId || "");
-    const base = Math.round(Number(req.body.base));
-    const shipping = Math.round(Number(req.body.shipping || 0));
-    const platformFee = Math.round(Number(req.body.platformFee || 0));
-    const address = normAddr(req.body.address || {});
-
-    if (!seller) return res.status(400).json({ error: "sellerStripeId required" });
-    if (!Number.isFinite(base) || base <= 0) return res.status(400).json({ error: "Invalid base" });
-    if (!address.postal_code) return res.status(400).json({ error: "postal_code required" });
-
-    // Recompute tax on server
     const calc = await stripe.tax.calculations.create({
       currency,
       line_items: [
@@ -788,16 +656,127 @@ router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
       customer_details: { address, address_source: "shipping" },
     });
 
-    const tax = calc.tax_amount_exclusive
-      ?? calc.tax_amount_inclusive
-      ?? (calc.amount_total - calc.amount_subtotal);
+    const itemTax =
+      calc.tax_amount_exclusive ??
+      calc.tax_amount_inclusive ??
+      (calc.amount_total - calc.amount_subtotal);
+
+    const total = base + shipping + itemTax;
+
+    // ✅ If orderId provided, persist the breakdown
+    if (orderId) {
+      await OrderModel.findByIdAndUpdate(
+        orderId,
+        {
+          $set: {
+            baseAmount: base,
+            shippingAmount: shipping,
+            taxAmount: itemTax,
+            totalAmount: total,
+            // keep legacy mirror in sync:
+            price: base,
+          },
+        },
+        { new: true }
+      );
+    }
+
+    return res.json({ ok: true, currency, base, shipping, tax: itemTax, total });
+  } catch (e) {
+    console.error("calculate-tax error", e);
+    // soft fallback with zero tax
+    const currency = (req.body.currency || "usd").toLowerCase();
+    const base = Math.round(Number(req.body.base || 0));
+    const shipping = Math.round(Number(req.body.shipping || 0));
+    const total = base + shipping;
+
+    if (req.body.orderId) {
+      await OrderModel.findByIdAndUpdate(req.body.orderId, {
+        $set: {
+          baseAmount: base,
+          shippingAmount: shipping,
+          taxAmount: 0,
+          totalAmount: total,
+          price: base,
+        },
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      currency,
+      base,
+      shipping,
+      tax: 0,
+      total,
+      note: "tax_fallback_error",
+    });
+  }
+});
+
+
+// POST /orders/create-payment-intent  ✅ computes & saves base/shipping/tax/total on the order
+router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
+  try {
+    const currency = "usd";
+    const orderId = String(req.body.orderId || "");
+    const platformFee = Math.max(0, Math.round(Number(req.body.platformFee || 0)));
+
+    if (!orderId) return res.status(400).json({ error: "orderId required" });
+
+    // Fetch order to get seller + address + base/shipping
+    const order = await OrderModel.findById(orderId);
+    if (!order) return res.status(404).json({ error: "Order not found" });
+
+    // Ensure current user is the buyer
+    if (String(order.userId) !== String(req.user._id)) {
+      return res.status(403).json({ error: "Not allowed" });
+    }
+
+    const seller = order.artistStripeId;
+    if (!seller) return res.status(400).json({ error: "Artist Stripe account missing" });
+
+    const address = normAddr(order.deliveryDetails || {});
+    if (!address.postal_code) return res.status(400).json({ error: "postal_code required" });
+
+    // Use what’s already on the order (client may have run shipping quote earlier)
+    const base = Math.max(0, Math.round(Number(order.baseAmount || order.price || 0)));
+    const shipping = Math.max(0, Math.round(Number(order.shippingAmount || 0)));
+
+    if (!Number.isFinite(base) || base <= 0) return res.status(400).json({ error: "Invalid base amount on order" });
+
+    // Compute tax fresh on server
+    const calc = await stripe.tax.calculations.create({
+      currency,
+      line_items: [
+        { amount: base, reference: "artwork", tax_behavior: "exclusive" },
+        ...(shipping > 0
+          ? [{ amount: shipping, reference: "shipping_cost", tax_behavior: "exclusive" }]
+          : []),
+      ],
+      customer_details: { address, address_source: "shipping" },
+    });
+
+    const tax =
+      calc.tax_amount_exclusive ??
+      calc.tax_amount_inclusive ??
+      (calc.amount_total - calc.amount_subtotal);
 
     const total = base + shipping + tax;
 
-    // Seller gets pre-tax share minus platform fee. Remainder (tax + fee) stays on platform.
+    // Seller receives base + shipping minus platform fee (tax stays with platform)
     const sellerShare = Math.max(0, base + shipping - platformFee);
     const remainderToPlatform = total - sellerShare; // = tax + platformFee
 
+    // ✅ Persist breakdown on the order BEFORE creating PI (so UI is consistent)
+    order.baseAmount = base;
+    order.shippingAmount = shipping;
+    order.taxAmount = tax;
+    order.totalAmount = total;
+    order.price = base; // legacy mirror
+    await order.save();
+
+    // Create PI that transfers sellerShare to connected account
     const pi = await stripe.paymentIntents.create({
       amount: total,
       currency,
@@ -805,7 +784,6 @@ router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
         destination: seller,
         amount: sellerShare,
       },
-      // DO NOT include application_fee_amount when transfer_data.amount is present
       shipping: {
         name: address.name || req.user?.name || "Customer",
         address: {
@@ -818,22 +796,31 @@ router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
       },
       automatic_payment_methods: { enabled: true },
       metadata: {
-        orderId: req.body.orderId || "",
+        orderId,
         base: String(base),
         shipping: String(shipping),
         tax: String(tax),
+        total: String(total),
         platformFee: String(platformFee),
         sellerShare: String(sellerShare),
         remainderToPlatform: String(remainderToPlatform),
       },
     });
 
-    return res.json({ clientSecret: pi.client_secret, total, tax, sellerShare, platformFee });
+    return res.json({
+      clientSecret: pi.client_secret,
+      total,
+      tax,
+      sellerShare,
+      platformFee,
+      orderId,
+    });
   } catch (e) {
     console.error("create-payment-intent error", e);
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
 
 router.post("/payout", async (req, res) => {
   try {
@@ -952,157 +939,149 @@ router.post("/create-stripe-account", async (req, res) => {
 // });
 // Webhook handler for Stripe events
 
-// STRIPE WEBHOOK (MUST use raw body)
-router.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET; // whsec_...
+// STRIPE WEBHOOK (raw body)
+router.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  const sig = req.headers["stripe-signature"];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-    let event;
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-    } catch (err) {
-      console.error("❌ Webhook signature verification failed:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error("❌ Webhook signature verification failed:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
 
-    try {
-      switch (event.type) {
-        case "payment_intent.succeeded": {
-          const pi = event.data.object; // PaymentIntent
-          const orderId = pi.metadata?.orderId;
+  try {
+    switch (event.type) {
+      case "payment_intent.succeeded": {
+        const pi = event.data.object;
+        const orderId = pi.metadata?.orderId;
 
-          if (orderId) {
-            // 1) mark the order as paid (note: schema uses 'status' only)
-            await OrderModel.findOneAndUpdate(
-              { _id: orderId },
-              {
-                status: "paid",
-                paymentIntentId: pi.id,
-                paidAt: new Date(),
-              }
-            );
+        if (orderId) {
+          // ✅ Pull the amounts we put in metadata (all are strings)
+          const base = Math.max(0, Math.round(Number(pi.metadata?.base || 0)));
+          const shipping = Math.max(0, Math.round(Number(pi.metadata?.shipping || 0)));
+          const tax = Math.max(0, Math.round(Number(pi.metadata?.tax || 0)));
+          const total = Math.max(0, Math.round(Number(pi.metadata?.total || base + shipping + tax)));
 
-            try {
-              // 2) fetch the order to get image/user IDs
-              const paidOrder = await OrderModel.findById(orderId).lean();
-              if (paidOrder) {
-                // 2a) flip the image to SOLD (idempotent)
-                await ImageModel.findOneAndUpdate(
-                  { _id: paidOrder.imageId, soldStatus: { $ne: "sold" } },
-                  { soldStatus: "sold" },
-                  { new: true }
-                );
+          await OrderModel.findOneAndUpdate(
+            { _id: orderId },
+            {
+              status: "paid",
+              paymentIntentId: pi.id,
+              paidAt: new Date(),
 
-                // 2b) notify the buyer: success
-                await Notification.create({
-                  recipientUserId: paidOrder.userId,           // buyer
-                  actorUserId: paidOrder.artistUserId,         // seller
-                  type: NOTIFICATION_TYPE.ORDER_PAID,
-                  title: "Payment successful",
-                  message: `You purchased “${paidOrder.artName}”. We'll notify you when it ships.`,
-                  orderId: paidOrder._id,
-                  imageId: paidOrder.imageId,
-                  data: {
-                    artName: paidOrder.artName,
-                    price: paidOrder.price,
-                    imageLink: paidOrder.imageLink,
-                  },
-                });
+              // ✅ persist new money fields
+              baseAmount: base,
+              shippingAmount: shipping,
+              taxAmount: tax,
+              totalAmount: total,
 
-                // 2c) notify the seller: payment received
-                await Notification.create({
-                  recipientUserId: paidOrder.artistUserId, // seller
-                  actorUserId: paidOrder.userId,           // buyer
-                  type: NOTIFICATION_TYPE.ORDER_PAID,
-                  title: "Payment received",
-                  message: `Payment confirmed for "${paidOrder.artName}".`,
-                  orderId: paidOrder._id,
-                  imageId: paidOrder.imageId,
-                  data: {
-                    artName: paidOrder.artName,
-                    price: paidOrder.price,
-                    imageLink: paidOrder.imageLink,
-                  },
-                });
-
-                // 2d) notify the seller: needs shipping
-                await Notification.create({
-                  recipientUserId: paidOrder.artistUserId,
-                  actorUserId: paidOrder.userId,
-                  type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
-                  title: "Action needed: Ship order",
-                  message: `"${paidOrder.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
-                  orderId: paidOrder._id,
-                  imageId: paidOrder.imageId,
-                  data: {
-                    artName: paidOrder.artName,
-                    price: paidOrder.price,
-                    imageLink: paidOrder.imageLink,
-                  },
-                });
-              }
-            } catch (nErr) {
-              console.error("⚠️ post-payment actions error:", nErr);
+              // legacy mirror
+              price: base,
             }
+          );
+
+          try {
+            const paidOrder = await OrderModel.findById(orderId).lean();
+            if (paidOrder) {
+              // mark image sold
+              await ImageModel.findOneAndUpdate(
+                { _id: paidOrder.imageId, soldStatus: { $ne: "sold" } },
+                { soldStatus: "sold" },
+                { new: true }
+              );
+
+              // notifications (unchanged text, now amounts exist on order)
+              await Notification.create({
+                recipientUserId: paidOrder.userId,
+                actorUserId: paidOrder.artistUserId,
+                type: NOTIFICATION_TYPE.ORDER_PAID,
+                title: "Payment successful",
+                message: `You purchased “${paidOrder.artName}”. We'll notify you when it ships.`,
+                orderId: paidOrder._id,
+                imageId: paidOrder.imageId,
+                data: {
+                  artName: paidOrder.artName,
+                  price: paidOrder.baseAmount, // show base price
+                  imageLink: paidOrder.imageLink,
+                },
+              });
+
+              await Notification.create({
+                recipientUserId: paidOrder.artistUserId,
+                actorUserId: paidOrder.userId,
+                type: NOTIFICATION_TYPE.ORDER_PAID,
+                title: "Payment received",
+                message: `Payment confirmed for "${paidOrder.artName}".`,
+                orderId: paidOrder._id,
+                imageId: paidOrder.imageId,
+                data: {
+                  artName: paidOrder.artName,
+                  price: paidOrder.baseAmount,
+                  imageLink: paidOrder.imageLink,
+                },
+              });
+
+              await Notification.create({
+                recipientUserId: paidOrder.artistUserId,
+                actorUserId: paidOrder.userId,
+                type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
+                title: "Action needed: Ship order",
+                message: `"${paidOrder.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
+                orderId: paidOrder._id,
+                imageId: paidOrder.imageId,
+                data: {
+                  artName: paidOrder.artName,
+                  price: paidOrder.baseAmount,
+                  imageLink: paidOrder.imageLink,
+                },
+              });
+            }
+          } catch (nErr) {
+            console.error("⚠️ post-payment actions error:", nErr);
           }
-          break;
         }
-
-        case "payment_intent.payment_failed": {
-          const pi = event.data.object;
-          const orderId = pi.metadata?.orderId;
-
-          if (orderId) {
-            await OrderModel.findOneAndUpdate(
-              { _id: orderId },
-              {
-                status: "failed",
-                paymentIntentId: pi.id,
-                failureReason: pi.last_payment_error?.message,
-              }
-            );
-          }
-          break;
-        }
-
-        case "charge.refunded": {
-          const charge = event.data.object;
-          const paymentIntentId = charge.payment_intent;
-
-          if (paymentIntentId) {
-            await OrderModel.findOneAndUpdate(
-              { paymentIntentId },
-              {
-                status: "refunded",
-                refundedAt: new Date(),
-              }
-            );
-
-            // OPTIONAL: If you want to re-list on refund, uncomment:
-            // const order = await OrderModel.findOne({ paymentIntentId }).lean();
-            // if (order) {
-            //   await ImageModel.updateOne({ _id: order.imageId }, { soldStatus: "unsold" });
-            //   // (Optional) send refund notifications
-            // }
-          }
-          break;
-        }
-
-        default:
-          // acknowledge unhandled events
-          break;
+        break;
       }
 
-      return res.json({ received: true });
-    } catch (err) {
-      console.error("❌ Error processing webhook:", err);
-      return res.status(500).json({ error: "Webhook processing failed" });
+      case "payment_intent.payment_failed": {
+        const pi = event.data.object;
+        const orderId = pi.metadata?.orderId;
+        if (orderId) {
+          await OrderModel.findOneAndUpdate(
+            { _id: orderId },
+            { status: "failed", paymentIntentId: pi.id, failureReason: pi.last_payment_error?.message }
+          );
+        }
+        break;
+      }
+
+      case "charge.refunded": {
+        const charge = event.data.object;
+        const paymentIntentId = charge.payment_intent;
+        if (paymentIntentId) {
+          await OrderModel.findOneAndUpdate(
+            { paymentIntentId },
+            { status: "refunded", refundedAt: new Date() }
+          );
+          // (optional) re-list art on refund
+        }
+        break;
+      }
+
+      default:
+        // acknowledge others
+        break;
     }
+
+    return res.json({ received: true });
+  } catch (err) {
+    console.error("❌ Error processing webhook:", err);
+    return res.status(500).json({ error: "Webhook processing failed" });
   }
-);
+});
 
 
 router.post("/check-stripe-status", async (req, res) => {
@@ -1231,56 +1210,67 @@ router.get("/my-orders", isUserAuthorized, async (req, res) => {
 });
 
 
-// UPDATE ORDER (buyer/seller allowed as you enforce elsewhere)
+// UPDATE ORDER  ✅ allows patching new money fields; total recomputed by pre('save')
 router.put("/order/:id", isUserAuthorized, async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      status,           // use this (schema has: pending | paid | failed | refunded)
+      status,
       deliveryDetails,
-      price,
       artName,
       artistName,
       transactionId,
+
+      // new money fields (cents, integers)
+      baseAmount,
+      shippingAmount,
+      taxAmount,
     } = req.body;
 
-    // Find the order first
     const order = await OrderModel.findById(id);
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        error: "Order not found",
-      });
+    if (!order) return res.status(404).json({ success: false, error: "Order not found" });
+
+    // (optional) only buyer or seller can update — enforce as needed
+    const isBuyer = String(order.userId) === String(req.user._id);
+    const isSeller = String(order.artistUserId) === String(req.user._id);
+    if (!isBuyer && !isSeller) return res.status(403).json({ success: false, error: "Not allowed" });
+
+    if (status) order.status = status;
+    if (deliveryDetails) order.deliveryDetails = deliveryDetails;
+    if (artName) order.artName = artName;
+    if (artistName) order.artistName = artistName;
+    if (transactionId) order.transactionId = transactionId;
+
+    // ✅ money fields
+    const toPosInt = (n) => {
+      const v = Math.round(Number(n));
+      return Number.isFinite(v) && v >= 0 ? v : undefined;
+    };
+    const b = toPosInt(baseAmount);
+    const s = toPosInt(shippingAmount);
+    const t = toPosInt(taxAmount);
+
+    if (typeof b === "number") {
+      order.baseAmount = b;
+      order.price = b; // legacy mirror
     }
+    if (typeof s === "number") order.shippingAmount = s;
+    if (typeof t === "number") order.taxAmount = t;
 
-    // Only assign fields your schema actually stores
-    const updateData = {};
-    if (status) updateData.status = status;
-    if (deliveryDetails) updateData.deliveryDetails = deliveryDetails;
-    if (price) updateData.price = price;
-    if (artName) updateData.artName = artName;
-    if (artistName) updateData.artistName = artistName;
-    if (transactionId) updateData.transactionId = transactionId;
-
-    const updatedOrder = await OrderModel.findByIdAndUpdate(
-      id,
-      { $set: updateData },
-      { new: true, runValidators: true }
-    );
+    // totalAmount will be recomputed by pre('save')
+    const updated = await order.save();
 
     res.status(200).json({
       success: true,
-      data: updatedOrder,
+      data: updated,
       message: "Order updated successfully",
     });
   } catch (error) {
     console.error("Error updating order:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal Server Error",
-    });
+    res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 });
+
 
 
 // ======================= FULL ENDPOINT: PATCH /order/:id/tracking ========================
@@ -2384,6 +2374,123 @@ async function pollDueHandler(req, res) {
     return res.status(500).json({ ok: false, error: "poll failed" });
   }
 }
+
+// ✅ Fallback to ensure order flips even if webhook hasn’t fired yet
+// POST /finalize-payment  body: { paymentIntentId, orderId }
+router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
+  try {
+    const { paymentIntentId, orderId } = req.body || {};
+    if (!paymentIntentId || !orderId) {
+      return res.status(400).json({ success: false, error: "paymentIntentId and orderId are required" });
+    }
+
+    const order = await OrderModel.findById(orderId);
+    if (!order) return res.status(404).json({ success: false, error: "Order not found" });
+
+    // Only the buyer can finalize
+    if (String(order.userId) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, error: "Not allowed" });
+    }
+
+    // If already paid, return quickly (idempotent)
+    if ((order.status || "").toLowerCase() === "paid") {
+      return res.json({ success: true, data: { orderId: String(order._id), status: "already_paid" } });
+    }
+
+    // Pull PI from Stripe and verify
+    const pi = await stripe.paymentIntents.retrieve(String(paymentIntentId));
+    const status = String(pi?.status || "").toLowerCase();
+    if (status !== "succeeded") {
+      return res.status(400).json({ success: false, error: `PaymentIntent not succeeded (status=${status})` });
+    }
+
+    // Optional guard: metadata.orderId should match if present
+    const metaOrderId = (pi?.metadata?.orderId || "").trim();
+    if (metaOrderId && metaOrderId !== String(orderId)) {
+      return res.status(400).json({ success: false, error: "PaymentIntent metadata orderId mismatch" });
+    }
+
+    // Use metadata amounts if available; keep integers (cents)
+    const toPosInt = (v, def = 0) => {
+      const n = Math.max(0, Math.round(Number(v || def)));
+      return Number.isFinite(n) ? n : 0;
+    };
+    const baseCents     = toPosInt(pi?.metadata?.base,        order.baseAmount ?? order.price ?? 0);
+    const shippingCents = toPosInt(pi?.metadata?.shipping,    order.shippingAmount ?? 0);
+    const taxCents      = toPosInt(pi?.metadata?.tax,         order.taxAmount ?? 0);
+    const totalCents    = toPosInt(pi?.metadata?.total,       baseCents + shippingCents + taxCents);
+
+    // ✅ Persist order state
+    order.status = "paid";
+    order.paymentIntentId = pi.id;
+    order.paidAt = new Date();
+
+    // Keep new fields + legacy mirror in sync
+    order.baseAmount = baseCents;
+    order.shippingAmount = shippingCents;
+    order.taxAmount = taxCents;
+    order.totalAmount = totalCents;
+    order.price = baseCents; // legacy mirror
+
+    await order.save();
+
+    // ✅ Mark image SOLD (idempotent)
+    await ImageModel.findOneAndUpdate(
+      { _id: order.imageId, soldStatus: { $ne: "sold" } },
+      { soldStatus: "sold" },
+      { new: true }
+    );
+
+    // ✅ Notifications (best-effort)
+    const notifData = {
+      artName: order.artName,
+      price: order.baseAmount,
+      imageLink: order.imageLink,
+    };
+
+    await Promise.allSettled([
+      // Buyer: payment successful
+      Notification.create({
+        recipientUserId: order.userId,
+        actorUserId: order.artistUserId,
+        type: NOTIFICATION_TYPE.ORDER_PAID,
+        title: "Payment successful",
+        message: `You purchased “${order.artName}”. We'll notify you when it ships.`,
+        orderId: order._id,
+        imageId: order.imageId,
+        data: notifData,
+      }),
+      // Seller: payment received
+      Notification.create({
+        recipientUserId: order.artistUserId,
+        actorUserId: order.userId,
+        type: NOTIFICATION_TYPE.ORDER_PAID,
+        title: "Payment received",
+        message: `Payment confirmed for "${order.artName}".`,
+        orderId: order._id,
+        imageId: order.imageId,
+        data: notifData,
+      }),
+      // Seller: needs shipping
+      Notification.create({
+        recipientUserId: order.artistUserId,
+        actorUserId: order.userId,
+        type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
+        title: "Action needed: Ship order",
+        message: `"${order.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
+        orderId: order._id,
+        imageId: order.imageId,
+        data: notifData,
+      }),
+    ]);
+
+    return res.json({ success: true, data: { orderId: String(order._id), status: order.status } });
+  } catch (err) {
+    console.error("❌ finalize-payment error:", err);
+    return res.status(500).json({ success: false, error: "Finalize payment failed" });
+  }
+});
+
 
 // Expose both POST and GET so Vercel Cron (GET) works
 router.post("/orders/shipments/poll-due", pollDueGuard, pollDueHandler);

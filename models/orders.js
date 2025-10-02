@@ -1,4 +1,3 @@
-// models/orders.js
 import mongoose from "mongoose";
 const { Schema } = mongoose;
 
@@ -34,16 +33,16 @@ const toTitleCaseCarrier = (val) => {
     deutschepost: "DeutschePost",
   };
   const key = String(val).replace(/\s+/g, "").toLowerCase();
-  return map[key] || val; // fall back to original (will fail enum if unsupported)
+  return map[key] || val;
 };
 
 /** ===================== Subdocs ===================== */
 const TrackingEventSchema = new Schema(
   {
-    status: String,          // lowercase snapshot of event/tag (e.g., "in transit")
-    message: String,         // human-readable line from carrier
-    datetime: Date,          // parsed event time if available
-    location: String,        // "City, ST, Country"
+    status: String,
+    message: String,
+    datetime: Date,
+    location: String,
   },
   { _id: false }
 );
@@ -53,7 +52,7 @@ const ShippingSchema = new Schema(
     trackingNumber: { type: String, trim: true, uppercase: true, index: true },
     carrier: {
       type: String,
-      set: toTitleCaseCarrier, // normalize on write
+      set: toTitleCaseCarrier,
       enum: {
         values: [
           "USPS",
@@ -69,30 +68,18 @@ const ShippingSchema = new Schema(
         message: "Carrier must be a supported shipping provider",
       },
     },
-
     shipmentStatus: {
       type: String,
       enum: SHIPMENT_STATUS_ENUM,
       default: SHIPMENT_STATUS.PENDING,
       index: true,
     },
-
     shippedAt: { type: Date },
     estimatedDelivery: { type: Date },
     deliveredAt: { type: Date },
-
-    // First positive scan/webhook flips this true
     verified: { type: Boolean, default: false },
-
-    // AfterShip integration
     aftershipTrackingId: { type: String, sparse: true },
-    trackingDetails: {
-      type: Schema.Types.Mixed,
-      default: {},
-      select: false, // avoid heavy payloads on most queries
-    },
-
-    // (Optional) where the seller actually shipped from/to (if you capture it)
+    trackingDetails: { type: Schema.Types.Mixed, default: {}, select: false },
     shippingAddress: {
       name: { type: String },
       street1: { type: String },
@@ -102,10 +89,7 @@ const ShippingSchema = new Schema(
       zip: { type: String },
       country: { type: String, default: "US" },
     },
-
     trackingEvents: [TrackingEventSchema],
-
-    /** -------- Polling fields (for cron-based auto recheck) -------- */
     pollAttempts: { type: Number, default: 0 },
     nextPollAt: { type: Date, index: true },
     lastPolledAt: { type: Date },
@@ -114,19 +98,31 @@ const ShippingSchema = new Schema(
 );
 
 /** ===================== Order ===================== */
+const Money = { type: Number, min: 0, default: 0 }; // cents, integers
+
 const OrderSchema = new Schema(
   {
     imageId: { type: Schema.Types.ObjectId, ref: "Image", required: true },
     artName: { type: String, required: true },
     artistName: { type: String },
 
-    // enforce seller-only submission in routes
     artistUserId: { type: Schema.Types.ObjectId, ref: "User", required: true },
-
     artistStripeId: { type: String, required: true },
-    price: { type: Number, required: true },
 
-    userAccountName: { type: String, required: true }, // buyer's name at order time
+    /**
+     * LEGACY: `price` has been used as base price across the app.
+     * We are introducing baseAmount/shippingAmount/taxAmount/totalAmount.
+     * For backward-compatibility, we keep `price` and mirror it to baseAmount.
+     */
+    price: { type: Number, min: 0, required: true }, // cents (legacy base price)
+
+    /** >>> New monetary fields (all cents) <<< */
+    baseAmount: { ...Money },     // mirrors `price` for now
+    shippingAmount: { ...Money }, // after calculation
+    taxAmount: { ...Money },      // after calculation
+    totalAmount: { ...Money },    // base + shipping + tax
+
+    userAccountName: { type: String, required: true }, // buyer name at order time
 
     deliveryDetails: {
       name: { type: String, required: true },
@@ -135,7 +131,7 @@ const OrderSchema = new Schema(
       state: { type: String, required: true },
       zipCode: { type: String, required: true },
       country: { type: String, required: true },
-      // you can add shippingCost, phone, etc. if you already store them
+      // (optional) shippingCost, phone, etc.
     },
 
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true }, // buyer
@@ -158,17 +154,29 @@ const OrderSchema = new Schema(
   { timestamps: true }
 );
 
+/** Keep monetary fields in sync & enforce totalAmount */
+OrderSchema.pre("save", function (next) {
+  // If new fields are missing, seed them from legacy `price`
+  if (typeof this.baseAmount !== "number" || this.baseAmount < 0) {
+    this.baseAmount = Math.max(0, Number(this.price || 0));
+  }
+  // Keep legacy `price` mirrored from baseAmount if someone only set the new field
+  if (typeof this.price !== "number" || this.price < 0) {
+    this.price = Math.max(0, Number(this.baseAmount || 0));
+  }
+
+  const b = Math.max(0, Number(this.baseAmount || 0));
+  const s = Math.max(0, Number(this.shippingAmount || 0));
+  const t = Math.max(0, Number(this.taxAmount || 0));
+
+  this.totalAmount = b + s + t;
+  next();
+});
+
 /** ===================== Indexes ===================== */
-// lookups by tracking → order (also keeps index selective/stable)
 OrderSchema.index({ "shipping.trackingNumber": 1, _id: 1 });
-
-// AfterShip webhooks → order fast
 OrderSchema.index({ "shipping.aftershipTrackingId": 1 });
-
-// efficient “due for polling” scans
 OrderSchema.index({ "shipping.nextPollAt": 1, "shipping.shipmentStatus": 1 });
-
-// (nice-to-haves for dashboards)
 OrderSchema.index({ userId: 1, createdAt: -1 });
 OrderSchema.index({ artistUserId: 1, createdAt: -1 });
 
