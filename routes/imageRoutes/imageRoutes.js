@@ -404,16 +404,16 @@ router.delete('/image/:id', isUserAuthorized, async (request, response) => {
   }
 });
 
-// Route to get all images for the authenticated user
-router.get('/images', isUserAuthorized, async (request, response) => {
+// Route to get all images for the authenticated user (used by "My Listings")
+router.get('/images', isUserAuthorized, async (req, res) => {
   try {
-    const userId = request.user._id;
-    const { stage } = request.query;
+    const userId = req.user._id;
+    const { stage } = req.query;
 
     const query = { userId };
     if (stage) {
       if (!Object.values(IMAGE_STAGE).includes(stage)) {
-        return response.status(400).json({
+        return res.status(400).json({
           success: false,
           error: 'Invalid stage. Allowed values: review, approved, sold',
         });
@@ -422,9 +422,9 @@ router.get('/images', isUserAuthorized, async (request, response) => {
     }
 
     const images = await ImageModel.find(query)
-      .select('_id name imageLink stage soldStatus');
+      .select('_id userId name imageLink stage soldStatus views price category createdAt dimensions weight isSigned isFramed');
 
-    const withSoldFlag = images.map((img) => {
+    const withFlags = images.map((img) => {
       const o = img.toObject();
       return {
         ...o,
@@ -432,12 +432,13 @@ router.get('/images', isUserAuthorized, async (request, response) => {
       };
     });
 
-    response.status(200).json({ success: true, images: withSoldFlag });
+    res.status(200).json({ success: true, images: withFlags });
   } catch (error) {
     console.error('Error fetching images:', error);
-    response.status(500).json({ success: false, error: 'Internal Server Error' });
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
+
 
 
 // // Route to update the view count of an image by id
