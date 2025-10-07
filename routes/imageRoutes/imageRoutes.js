@@ -204,8 +204,8 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
     const user = await UserModel.findById(userId)
       .populate({
         path: 'likedImages',
-        select: '_id name imageLink description price category createdAt userId soldStatus',
-        populate: { path: 'userId', select: 'name' },
+        select: '_id name imageLink description price category createdAt userId soldStatus views likes',
+        populate: { path: 'userId', select: 'name profilePictureLink' },
       })
       .select('likedImages');
 
@@ -221,7 +221,11 @@ router.get('/image/liked-images', isUserAuthorized, async (req, res) => {
       price: image.price,
       category: image.category,
       createdAt: image.createdAt,
+      views: image.views,
+      likesCount: Array.isArray(image.likes) ? image.likes.length : 0,
       artist: { name: image.userId?.name || 'Unknown Artist' },
+      userId: image.userId?._id || null,                  // for profile picture lookup
+      profilePictureLink: image.userId?.profilePictureLink || null,
       soldStatus: image.soldStatus,
       isSold: String(image.soldStatus || '').toLowerCase() === 'sold',
     }));
@@ -243,7 +247,8 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
     const userId = request.user._id;
     const imageId = request.params.id;
 
-    // Note: this restricts to the owner’s images. If you want this to be public, remove { userId }
+    // Restricting to the owner’s images (for privacy)
+    // If you want it public, remove "userId" from the filter.
     const image = await ImageModel.findOne({ _id: imageId, userId: userId });
 
     if (!image) {
@@ -254,6 +259,7 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
 
     const responseData = {
       _id: image._id,
+      userId: image.userId,               // Needed for profile picture fetch
       artistName: image.artistName,
       name: image.name,
       description: image.description,
@@ -263,14 +269,19 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
       views: image.views,
       soldStatus: image.soldStatus,
       isSold: String(image.soldStatus || '').toLowerCase() === 'sold',
+      dimensions: image.dimensions,       // For details card
+      weight: image.weight,
+      isSigned: image.isSigned,
+      isFramed: image.isFramed,
     };
 
-    response.json(responseData);
+    response.status(200).json(responseData);
   } catch (err) {
     console.error(err);
     response.status(500).json({ success: false, error: err.message });
   }
 });
+
 
 
 // Route to update an image by id
