@@ -19,7 +19,7 @@ cloudinary.v2.config({
     cloud_name: process.env.CLOUDINARY_CLOUD,
     api_key: process.env.CLOUDINARY_API,
     api_secret: process.env.CLOUDINARY_SECRET,
-  });
+});
 
 router.post("/login", async (req, res) => {
     const { email, password } = req.body;
@@ -68,9 +68,9 @@ router.post('/renew_token', isAdminAuthorized, (req, res) => {
     const token = getAuthToken(req.headers);
 
     // generate & return a new token if the token is valid
-    try{
+    try {
         jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-            if(err){
+            if (err) {
                 return res.status(401).send('Invalid refresh token');
             }
 
@@ -78,7 +78,7 @@ router.post('/renew_token', isAdminAuthorized, (req, res) => {
             res.status(200).json({ token: newToken });
         })
     }
-    catch(error){
+    catch (error) {
         console.error("❌ Server error:", error);
         res.status(500).json({ message: "Server error", error });
     }
@@ -104,24 +104,25 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
 
         const MAX_LIMIT = 50;
         const limit = parseInt(req.query.limit) || MAX_LIMIT;
-        
+
         // query for specific stage status if provided (pending images might not have statuses so include those)
         const stage = req.query.stage;
-        const queryStage = (stage === 'review') ? 
+        const queryStage = (stage === 'review') ?
             { $or: [{ stage: 'review' }, { stage: { $exists: false } }] } :
             (
                 stage ? { stage: stage } : {}
             );
-        
+
         // query for artist name or title if provided
         const input = req.query.input;
-        const queryInput = (input) ? { 
-            $and: [{ 
+        const queryInput = (input) ? {
+            $and: [{
                 $or: [
                     { artistName: { $regex: input, $options: 'i' } },
                     { name: { $regex: input, $options: 'i' } }
                 ]
-            }] } : {};
+            }]
+        } : {};
 
         const query = {
             ...queryStage,
@@ -131,7 +132,7 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
         // count total #pages & return empty page if overbound
         const totalCount = await ImageModel.countDocuments(query);
         const totalPages = Math.ceil(totalCount / limit);
-        if(page > totalPages){
+        if (page > totalPages) {
             return res.status(200).json({
                 success: true,
                 images: [],
@@ -149,7 +150,7 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
             .skip(skip)
             .limit(limit)
             .exec();
-        
+
         // Format response data
         const responseData = images.map((image) => ({
             _id: image._id,
@@ -184,7 +185,7 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
 
 // ✅ NEW: Admin-only route to get images statistics (counting total, pending, etc.)
 router.get("/all_images/stats", isAdminAuthorized, async (_, res) => {
-    try{
+    try {
         const totalCount = await ImageModel.countDocuments();
 
         // counted images w/o stage attribute
@@ -199,7 +200,7 @@ router.get("/all_images/stats", isAdminAuthorized, async (_, res) => {
 
         res.status(200).json({
             success: true,
-            stats:{
+            stats: {
                 total: totalCount,
                 pending: pendingCount,
                 approved: approvedCount,
@@ -207,7 +208,7 @@ router.get("/all_images/stats", isAdminAuthorized, async (_, res) => {
             }
         })
     }
-    catch (error){
+    catch (error) {
         console.error("Error fetching images stats for admin:", error);
         return res.status(500).json({
             success: false,
@@ -236,51 +237,51 @@ router.get("/art/:id", isAdminAuthorized, async (req, res) => {
 // ✅ Admin-only route to approve an artwork
 router.put("/art/:id/approve", isAdminAuthorized, async (req, res) => {
     try {
-      const { id } = req.params;
-      const adminEmail = req.admin.email;
-  
-      // we need the owner (recipient) to notify
-      const art = await ImageModel.findById(id).lean();
-      if (!art) {
-        return res.status(404).json({ success: false, error: "Artwork not found" });
-      }
-  
-      const updatedArt = await ImageModel.findByIdAndUpdate(
-        id,
-        {
-          stage: "approved",
-          reviewedByEmail: adminEmail,
-          reviewedAt: new Date(),
-        },
-        { new: true }
-      );
-  
-      // ---- create in-app notification for the artist ----
-      try {
-        await Notification.create({
-          recipientUserId: art.userId,          // artist (owner of artwork)
-          actorUserId: null,                    // system/admin; leave null or set an admin user id
-          type: NOTIFICATION_TYPE.IMAGE_APPROVED,
-          title: "Artwork approved",
-          message: `Your artwork “${art.name}” has been approved and is now visible to buyers.`,
-          imageId: art._id,
-          data: {
-            artName: art.name,
-            artistName: art.artistName,
-            imageLink: art.imageLink,
-            price: art.price,
-          },
-        });
-      } catch (nErr) {
-        console.error("Create notification (approved) failed:", nErr);
-      }
-  
-      // ---- optional: send email to the artist ----
-      try {
-        const artist = await UserModel.findById(art.userId).lean();
-        if (artist?.email) {
-          const subject = "Your artwork was approved";
-          const html = `
+        const { id } = req.params;
+        const adminEmail = req.admin.email;
+
+        // we need the owner (recipient) to notify
+        const art = await ImageModel.findById(id).lean();
+        if (!art) {
+            return res.status(404).json({ success: false, error: "Artwork not found" });
+        }
+
+        const updatedArt = await ImageModel.findByIdAndUpdate(
+            id,
+            {
+                stage: "approved",
+                reviewedByEmail: adminEmail,
+                reviewedAt: new Date(),
+            },
+            { new: true }
+        );
+
+        // ---- create in-app notification for the artist ----
+        try {
+            await Notification.create({
+                recipientUserId: art.userId,          // artist (owner of artwork)
+                actorUserId: null,                    // system/admin; leave null or set an admin user id
+                type: NOTIFICATION_TYPE.IMAGE_APPROVED,
+                title: "Artwork approved",
+                message: `Your artwork “${art.name}” has been approved and is now visible to buyers.`,
+                imageId: art._id,
+                data: {
+                    artName: art.name,
+                    artistName: art.artistName,
+                    imageLink: art.imageLink,
+                    price: art.price,
+                },
+            });
+        } catch (nErr) {
+            console.error("Create notification (approved) failed:", nErr);
+        }
+
+        // ---- optional: send email to the artist ----
+        try {
+            const artist = await UserModel.findById(art.userId).lean();
+            if (artist?.email) {
+                const subject = "Your artwork was approved";
+                const html = `
             <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">
               <h2>Great news, ${artist.name || "artist"}!</h2>
               <p>Your artwork <strong>${art.name}</strong> has been approved.</p>
@@ -288,82 +289,85 @@ router.put("/art/:id/approve", isAdminAuthorized, async (req, res) => {
               <hr/>
               <p style="color:#777">If you weren’t expecting this email, you can ignore it.</p>
             </div>`;
-          await sendEmail(artist.email, subject, html);
+                await sendEmail(artist.email, subject, html);
+            }
+        } catch (e) {
+            console.error("Send approval email failed:", e);
         }
-      } catch (e) {
-        console.error("Send approval email failed:", e);
-      }
-  
-      return res.status(200).json({ success: true, message: "Artwork approved", art: updatedArt });
+
+        return res.status(200).json({ success: true, message: "Artwork approved", art: updatedArt });
     } catch (error) {
-      console.error("Error approving artwork:", error);
-      res.status(500).json({ success: false, error: "Internal Server Error" });
+        console.error("Error approving artwork:", error);
+        res.status(500).json({ success: false, error: "Internal Server Error" });
     }
-  });
-  
+});
+
 
 
 // ✅ Admin-only route to reject an artwork
 router.put("/art/:id/reject", isAdminAuthorized, async (req, res) => {
     try {
-      const { id } = req.params;
-      const { rejectionMessage } = req.body;
-      const adminEmail = req.admin.email;
-  
-      // Grab the art first so we definitely have owner + fields for the notif
-      const art = await ImageModel.findById(id).lean();
-      if (!art) {
-        return res.status(404).json({ success: false, error: "Artwork not found" });
-      }
-  
-      const updatedArt = await ImageModel.findByIdAndUpdate(
-        id,
-        {
-          stage: "rejected",
-          rejectionMessage: rejectionMessage || "",
-          reviewedByEmail: adminEmail,
-          reviewedAt: new Date(),
-        },
-        { new: true }
-      );
-  
-      // ---- in-app notification (email will be sent by Notification post-save hook) ----
-      try {
-        const reason = (rejectionMessage || "").trim();
-        await Notification.create({
-          recipientUserId: art.userId,          // artist (owner)
-          actorUserId: null,                    // system/admin
-          type: NOTIFICATION_TYPE.IMAGE_REJECTED,
-          title: "Artwork rejected",
-          message: `Your artwork “${art.name}” was rejected${reason ? `: ${reason}` : "."}`,
-          imageId: art._id,
-          data: {
-            artName: art.name,
-            artistName: art.artistName,
-            imageLink: art.imageLink,
-            price: art.price,
-          },
-        });
-      } catch (nErr) {
-        console.error("Create notification (rejected) failed:", nErr);
-      }
-  
-      // (No need to call sendEmail here—your NotificationSchema.post('save') already emails)
-  
-      return res
-        .status(200)
-        .json({ success: true, message: "Artwork rejected", art: updatedArt });
+        const { id } = req.params;
+        const { rejectionMessage } = req.body;
+        const adminEmail = req.admin.email;
+
+        // Grab the art first so we definitely have owner + fields for the notif
+        const art = await ImageModel.findById(id).lean();
+        if (!art) {
+            return res.status(404).json({ success: false, error: "Artwork not found" });
+        }
+
+        const updatedArt = await ImageModel.findByIdAndUpdate(
+            id,
+            {
+                stage: "rejected",
+                rejectionMessage: rejectionMessage || "",
+                reviewedByEmail: adminEmail,
+                reviewedAt: new Date(),
+            },
+            { new: true }
+        );
+
+        // ---- in-app notification (email will be sent by Notification post-save hook) ----
+        try {
+            const reason = (rejectionMessage || "").trim();
+            await Notification.create({
+                recipientUserId: art.userId,          // artist (owner)
+                actorUserId: null,                    // system/admin
+                type: NOTIFICATION_TYPE.IMAGE_REJECTED,
+                title: "Artwork rejected",
+                message: `Your artwork “${art.name}” was rejected${reason ? `: ${reason}` : "."}`,
+                imageId: art._id,
+                data: {
+                    artName: art.name,
+                    artistName: art.artistName,
+                    imageLink: art.imageLink,
+                    price: art.price,
+                },
+            });
+        } catch (nErr) {
+            console.error("Create notification (rejected) failed:", nErr);
+        }
+
+        // (No need to call sendEmail here—your NotificationSchema.post('save') already emails)
+
+        return res
+            .status(200)
+            .json({ success: true, message: "Artwork rejected", art: updatedArt });
     } catch (error) {
-      console.error("Error rejecting artwork:", error);
-      return res.status(500).json({ success: false, error: "Internal Server Error" });
+        console.error("Error rejecting artwork:", error);
+        return res.status(500).json({ success: false, error: "Internal Server Error" });
     }
-  });
-  
+});
+
 
 // ✅ Admin-only route to get all users
 router.get("/users", isAdminAuthorized, async (req, res) => {
     try {
-        const users = await UserModel.find({}, "name email role createdAt profilePictureLink");
+        const users = await UserModel.find(
+            {},
+            "name email role createdAt profilePictureLink stripeAccountId stripeOnboardingCompleted"
+        );
 
         if (!users.length) {
             return res.status(404).json({ success: false, error: "No users found" });
