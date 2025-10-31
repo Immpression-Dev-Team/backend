@@ -10,6 +10,7 @@ import multer from 'multer';
 // Importing the ImageModel from the models directory
 import ImageModel from '../../models/images.js';
 import UserModel from '../../models/users.js';
+import ImageViewModel from "../../models/image-views.js";
 
 // Importing the isUserAuthorized function from the utils directory
 import {
@@ -439,104 +440,6 @@ router.get('/images', isUserAuthorized, async (req, res) => {
   }
 });
 
-
-
-// // Route to update the view count of an image by id
-// router.patch('/viewcount/:id/', isUserAuthorized, async (request, response) => {
-//   try {
-//     // Getting the userId from the authenticated user
-//     const userId = request.user.id;
-//     // Getting the imageId from the request parameters
-//     const imageId = request.params.id;
-
-//     // Finding and updating the viewcount
-//     const increaseCount = await ImageModel.findOneAndUpdate(
-//       {
-//         _id: imageId,
-//         userId: userId,
-//       },
-//       {
-//         $inc: {
-//           viewCount: 1,
-//         },
-//       },
-//       // Return the updated document
-//       { new: true }
-//     );
-
-//     // Check if increaseCount is null (no document found)
-//     if (!increaseCount) {
-//       return response
-//         .status(404)
-//         .json({ success: false, error: 'Image with id not found' });
-//     }
-
-//     // If the image is found and the view count is increased
-//     return response
-//       .status(200)
-//       .json({ success: true, message: 'Image view count updated' });
-//   } catch (error) {
-//     // Logging the error to the console
-//     console.error('Error updating image view count:', error);
-//     // Sending an internal server error response to the client
-//     return response
-//       .status(500)
-//       .json({ success: false, error: 'Internal Server Error' });
-//   }
-// });
-
-// Route to update the view count of an image by id
-router.patch('/increment-image-views/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Validate the ID parameter
-    if (!id || typeof id !== 'string') {
-      console.log('Invalid or missing image ID.');
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid or missing image ID',
-      });
-    }
-
-    console.log(`Received request to increment views for image ID: ${id}`);
-
-    // Find image by ID and increment view count
-    const updatedImage = await ImageModel.findByIdAndUpdate(
-      id,
-      { $inc: { views: 1 } },
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedImage) {
-      console.log('Image not found.');
-      return res.status(404).json({
-        success: false,
-        error: 'Image not found',
-      });
-    }
-
-    console.log(
-      `Incremented views for image ID: ${id}, new view count: ${updatedImage.views}`
-    );
-
-    res.status(200).json({
-      success: true,
-      message: 'Image view count incremented successfully',
-      image: {
-        id: updatedImage._id,
-        views: updatedImage.views,
-      },
-    });
-  } catch (error) {
-    console.error('Error incrementing image views:', error.message);
-    res.status(500).json({
-      success: false,
-      error: 'Internal Server Error',
-    });
-  }
-});
-
 // Route to get image views by image ID
 router.get('/get-image-views/:id', async (req, res) => {
   try {
@@ -785,6 +688,35 @@ router.patch("/image/:id/review", isUserAuthorized, async (req, res) => {
   } catch (error) {
     console.error("Error updating image stage:", error);
     return res.status(500).json({ success: false, error: "Internal Server Error" });
+  }
+});
+
+
+// Route to check if user has seen an image, and record the view if not
+router.post('/image/:id/unique-views', isUserAuthorized, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const imageId = req.params.id;
+    
+    if (!mongoose.Types.ObjectId.isValid(imageId)) {
+      return res.status(400).json({ success: false, error: 'Invalid image ID' });
+    }
+
+    // Check if the user has already viewed the image
+    const alreadyViewed = await ImageViewModel.findOne({ userId, imageId });
+
+    if (alreadyViewed) {
+      return res.json({ success: true, viewed: true });
+    }
+
+    // Record the view
+    await ImageViewModel.create({ userId, imageId });
+    await ImageModel.findByIdAndUpdate(imageId, { $inc: { views: 1 } });
+
+    res.json({ success: true, viewed: false, recorded: true });
+  } catch (error) {
+    console.error('Error checking/recording image view:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 });
 
