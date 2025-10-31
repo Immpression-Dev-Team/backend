@@ -678,7 +678,7 @@ router.get('/get-artist-type', isUserAuthorized, async (request, response) => {
   }
 });
 
-router.patch('/increment-views/:id', async (req, res) => {
+router.patch('/profile/increment-views/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
