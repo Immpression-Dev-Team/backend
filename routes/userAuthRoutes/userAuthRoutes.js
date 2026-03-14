@@ -13,6 +13,7 @@ const { compare, hash } = bcrypt;
 
 // Import the user model
 import UserModel from '../../models/users.js';
+import ImageModel from '../../models/images.js';
 
 // Import utility functions for authentication
 import {
@@ -314,8 +315,16 @@ router.get('/get-profile', isUserAuthorized, async (request, response) => {
 router.get('/all-profile-pictures', async (request, response) => {
   try {
     // Find all users and select the necessary fields: name, email, profilePictureLink, bio, and artistType
+    // Find art-lovers who have uploaded at least one image
+    const uploaderIds = await ImageModel.distinct('userId');
+
     const users = await UserModel.find(
-      { accountType: 'artist' },
+      {
+        $or: [
+          { accountType: 'artist' },
+          { accountType: 'art-lover', _id: { $in: uploaderIds } },
+        ],
+      },
       {
         name: 1,
         email: 1,
