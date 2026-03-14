@@ -33,6 +33,9 @@ import reportRoutes from "./routes/reportRoutes/reportRoutes.js";
 import blockRoutes from "./routes/blockRoutes/blockRoutes.js";
 import adminReportRoutes from "./routes/admin-userAuthRoutes/admin-reportRoutes.js";
 
+// Public domain art (proxy layer — no DB interaction)
+import publicArtRoutes from "./routes/publicArtRoutes/publicArtRoutes.js";
+
 // SLA Monitor service
 import { startSLAMonitor } from "./services/slaMonitor.js";
 
@@ -166,6 +169,9 @@ app.use("/api/admin/reports", adminReportRoutes);
 
 // Web donations (platform-only; includes /donations/create-checkout-session and /donations/webhook)
 app.use("/api/web", webDonationsRoutes);
+
+// Public domain art (proxy — no DB)
+app.use("/public-art", publicArtRoutes);
 
 // ----- Database connection -----
 const PORT = process.env.BACKEND_PORT || 4000;
