@@ -315,13 +315,14 @@ router.get('/all-profile-pictures', async (request, response) => {
   try {
     // Find all users and select the necessary fields: name, email, profilePictureLink, bio, and artistType
     const users = await UserModel.find(
-      {},
+      { accountType: 'artist' },
       {
         name: 1,
         email: 1,
         profilePictureLink: 1,
         bio: 1,
         artistType: 1,
+        accountType: 1,
         userId: 1,
       }
     );
