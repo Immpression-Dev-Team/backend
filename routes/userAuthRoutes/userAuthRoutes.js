@@ -320,21 +320,12 @@ router.get('/get-profile', isUserAuthorized, async (request, response) => {
 // Route to get all users' profile pictures, bio, and artist type
 router.get('/all-profile-pictures', async (request, response) => {
   try {
-    // Users who have at least one image on the platform
-    const uploaderIds = await ImageModel.distinct('userId');
-
-    // Users who have sold at least one artwork
-    const soldUploaderIds = await ImageModel.distinct('userId', {
-      $or: [{ stage: 'sold' }, { soldStatus: 'sold' }],
+    // Users who have at least one approved (for sale) or sold artwork
+    const eligibleRaw = await ImageModel.distinct('userId', {
+      $or: [{ stage: 'approved' }, { stage: 'sold' }, { soldStatus: 'sold' }],
     });
 
-    // Combine both sets into a single list of eligible user IDs
-    const eligibleIds = [
-      ...new Set([
-        ...uploaderIds.map(String),
-        ...soldUploaderIds.map(String),
-      ]),
-    ];
+    const eligibleIds = [...new Set(eligibleRaw.map(String))];
 
     const users = await UserModel.find(
       { _id: { $in: eligibleIds } },
