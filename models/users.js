@@ -62,6 +62,15 @@ const UserSchema = new Schema(
     isGoogleUser: { type: Boolean, default: false },
     isVerified: { type: Boolean, default: false },
 
+    signupSource: {
+      type: String,
+      enum: {
+        values: ['web', 'mobile'],
+        message: '{VALUE} is not a valid signup source.',
+      },
+      default: 'mobile',
+    },
+
     stripeAccountId: { type: String, default: null },
     stripeOnboardingCompleted: { type: Boolean, default: false },
     stripeOnboardingCompletedAt: { type: Date, default: null },

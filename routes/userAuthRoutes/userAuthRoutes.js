@@ -60,7 +60,7 @@ const router = express.Router();
 // Route for OTP request
 router.post('/request-otp', otpRateLimiter, async (request, response) => {
   try {
-    const { email, password } = request.body;
+    const { email, password, signupSource } = request.body;
 
     if (!email || !isValidEmail(email)) {
       return response
@@ -100,7 +100,8 @@ router.post('/request-otp', otpRateLimiter, async (request, response) => {
       await UserModel.create({
         email,
         password: hashedPassword,
-        isGoogleUser: false, // Explicitly set to false for email/password users
+        isGoogleUser: false,
+        signupSource: signupSource === 'web' ? 'web' : 'mobile',
       });
     }
 
@@ -1103,7 +1104,7 @@ router.post('/reset-password', async (req, res) => {
 // Route for Google login
 router.post('/google-login', async (request, response) => {
   try {
-    const { token } = request.body;
+    const { token, signupSource } = request.body;
     console.log('token', token);
     // Verify the Google token
     const ticket = await client.verifyIdToken({
@@ -1122,8 +1123,9 @@ router.post('/google-login', async (request, response) => {
         name,
         email,
         profilePictureLink: picture,
-        password: `GOOGLE_LOGIN_${Math.random().toString(36).slice(-8)}`, // Random password for Google users
+        password: `GOOGLE_LOGIN_${Math.random().toString(36).slice(-8)}`,
         isGoogleUser: true,
+        signupSource: signupSource === 'web' ? 'web' : 'mobile',
       });
     }
 
