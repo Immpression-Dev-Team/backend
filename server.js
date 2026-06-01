@@ -35,6 +35,7 @@ import adminReportRoutes from "./routes/admin-userAuthRoutes/admin-reportRoutes.
 import adminAnalyticsRoutes from "./routes/admin-userAuthRoutes/admin-analyticsRoutes.js";
 import adminSearchConsoleRoutes from "./routes/admin-userAuthRoutes/admin-searchConsoleRoutes.js";
 import adminSettingsRoutes from "./routes/admin-userAuthRoutes/admin-settingsRoutes.js";
+import adminPublicArtRoutes from "./routes/admin-userAuthRoutes/admin-publicArtRoutes.js";
 
 // Public domain art (proxy layer — no DB interaction)
 import publicArtRoutes from "./routes/publicArtRoutes/publicArtRoutes.js";
@@ -178,6 +179,7 @@ app.use("/api/admin/reports", adminReportRoutes);
 app.use("/api/admin/analytics/web", adminAnalyticsRoutes);
 app.use("/api/admin/analytics/search-console", adminSearchConsoleRoutes);
 app.use("/api/admin/settings", adminSettingsRoutes);
+app.use("/api/admin/public-art", adminPublicArtRoutes);
 
 // Web donations (platform-only; includes /donations/create-checkout-session and /donations/webhook)
 app.use("/api/web", webDonationsRoutes);

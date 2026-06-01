@@ -198,26 +198,35 @@ export async function getPublicArtwork(source, id) {
   return null;
 }
 
+const FALLBACK_FEATURED = [
+  { source: "met", id: 436535 },
+  { source: "met", id: 459123 },
+  { source: "met", id: 437984 },
+  { source: "chicago", id: 27992 },
+  { source: "chicago", id: 14655 },
+  { source: "chicago", id: 28560 },
+];
+
 /**
- * Featured artworks — a curated set of well-known public domain works.
- * IDs are hardcoded to avoid an extra round-trip on first load.
+ * Featured artworks — reads the admin-curated list from DB.
+ * Falls back to hardcoded defaults if no list has been saved yet.
  */
 export async function getFeaturedArtworks() {
   const cacheKey = "featured";
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
-  const featured = [
-    { source: "met", id: 436535 },   // Monet - La Grenouillère
-    { source: "met", id: 459123 },   // Van Gogh - Wheat Field with Cypresses
-    { source: "met", id: 437984 },   // Degas - The Dance Class
-    { source: "chicago", id: 27992 }, // Seurat - A Sunday on La Grande Jatte
-    { source: "chicago", id: 14655 }, // El Greco - The Assumption of the Virgin
-    { source: "chicago", id: 28560 }, // Rembrandt - Old Man with a Gold Chain
-  ];
+  let refs;
+  try {
+    const FeaturedPublicArt = (await import("../models/featuredPublicArt.js")).default;
+    const doc = await FeaturedPublicArt.findOne({ key: "default" }).lean();
+    refs = doc && doc.artworks.length > 0 ? doc.artworks : FALLBACK_FEATURED;
+  } catch {
+    refs = FALLBACK_FEATURED;
+  }
 
   const results = await Promise.allSettled(
-    featured.map(({ source, id }) => getPublicArtwork(source, id))
+    refs.map(({ source, id }) => getPublicArtwork(source, String(id)))
   );
 
   const artworks = results
@@ -226,4 +235,17 @@ export async function getFeaturedArtworks() {
 
   cacheSet(cacheKey, artworks);
   return artworks;
+}
+
+/**
+ * Save the admin-curated list and bust the featured cache.
+ */
+export async function saveFeaturedArtworks(refs, updatedBy) {
+  const FeaturedPublicArt = (await import("../models/featuredPublicArt.js")).default;
+  await FeaturedPublicArt.findOneAndUpdate(
+    { key: "default" },
+    { artworks: refs, updatedBy },
+    { upsert: true, new: true }
+  );
+  cache.delete("featured");
 }
