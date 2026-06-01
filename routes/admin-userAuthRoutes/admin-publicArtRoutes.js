@@ -36,6 +36,7 @@ router.put("/featured", isAdminAuthorized, async (req, res) => {
 
   try {
     const adminEmail = req.admin?.email || "unknown";
+    // artworks are full objects from the admin panel — store directly, no re-fetching needed
     await saveFeaturedArtworks(artworks, adminEmail);
     res.json({ success: true, message: `Saved ${artworks.length} featured artworks` });
   } catch (e) {

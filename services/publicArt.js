@@ -438,25 +438,29 @@ const FALLBACK_FEATURED = [
 ];
 
 /**
- * Featured artworks — reads the admin-curated list from DB.
- * Falls back to hardcoded defaults if no list has been saved yet.
+ * Featured artworks — reads full artwork objects directly from DB.
+ * Falls back to fetching hardcoded defaults from external APIs only if DB is empty.
  */
 export async function getFeaturedArtworks() {
   const cacheKey = "featured";
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
-  let refs;
   try {
     const FeaturedPublicArt = (await import("../models/featuredPublicArt.js")).default;
     const doc = await FeaturedPublicArt.findOne({ key: "default" }).lean();
-    refs = doc && doc.artworks.length > 0 ? doc.artworks : FALLBACK_FEATURED;
+
+    if (doc && doc.artworks.length > 0) {
+      cacheSet(cacheKey, doc.artworks);
+      return doc.artworks;
+    }
   } catch {
-    refs = FALLBACK_FEATURED;
+    // fall through to hardcoded defaults
   }
 
+  // No DB list yet — fetch hardcoded defaults from external APIs
   const results = await Promise.allSettled(
-    refs.map(({ source, id }) => getPublicArtwork(source, String(id)))
+    FALLBACK_FEATURED.map(({ source, id }) => getPublicArtwork(source, String(id)))
   );
 
   const artworks = results
@@ -468,13 +472,14 @@ export async function getFeaturedArtworks() {
 }
 
 /**
- * Save the admin-curated list and bust the featured cache.
+ * Save the full curated artwork objects to DB and bust the featured cache.
+ * The admin panel sends complete artwork objects so we never need to re-fetch.
  */
-export async function saveFeaturedArtworks(refs, updatedBy) {
+export async function saveFeaturedArtworks(artworks, updatedBy) {
   const FeaturedPublicArt = (await import("../models/featuredPublicArt.js")).default;
   await FeaturedPublicArt.findOneAndUpdate(
     { key: "default" },
-    { artworks: refs, updatedBy },
+    { artworks, updatedBy },
     { upsert: true, new: true }
   );
   cache.delete("featured");
