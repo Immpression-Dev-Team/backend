@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 const artworkRefSchema = new mongoose.Schema(
   {
-    source: { type: String, enum: ["met", "chicago"], required: true },
+    source: { type: String, enum: ["met", "chicago", "cleveland", "wikimedia", "rijksmuseum"], required: true },
     id: { type: String, required: true },
   },
   { _id: false }

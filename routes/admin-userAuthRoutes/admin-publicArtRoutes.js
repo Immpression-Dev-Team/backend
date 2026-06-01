@@ -1,6 +1,6 @@
 import express from "express";
 import { isAdminAuthorized } from "../../utils/authUtils.js";
-import { getFeaturedArtworks, saveFeaturedArtworks, getPublicArtwork, searchPublicArt } from "../../services/publicArt.js";
+import { getFeaturedArtworks, saveFeaturedArtworks, getPublicArtwork, searchPublicArt, VALID_SOURCES } from "../../services/publicArt.js";
 
 const router = express.Router();
 
@@ -28,9 +28,8 @@ router.put("/featured", isAdminAuthorized, async (req, res) => {
     return res.status(400).json({ success: false, error: "Cannot feature more than 20 artworks" });
   }
 
-  const validSources = ["met", "chicago"];
   for (const item of artworks) {
-    if (!validSources.includes(item.source) || !item.id) {
+    if (!VALID_SOURCES.includes(item.source) || !item.id) {
       return res.status(400).json({ success: false, error: "Each artwork must have a valid source and id" });
     }
   }
