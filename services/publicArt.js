@@ -259,28 +259,32 @@ async function getClevelandArtwork(id) {
 
 const WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php";
 
+const WIKIMEDIA_HEADERS = {
+  "User-Agent": "Immpression/1.0 (https://immpression.art; contact@immpression.art) axios",
+};
+
 async function searchWikimedia(query, limit = 20) {
   const cacheKey = `wikimedia:search:${query}:${limit}`;
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
   const res = await axios.get(WIKIMEDIA_API, {
+    headers: WIKIMEDIA_HEADERS,
     params: {
       action: "query",
       generator: "search",
       gsrsearch: `${query} painting`,
-      gsrnamespace: 6,       // File namespace only
-      gsrlimit: Math.min(limit * 2, 40), // Fetch extra since some won't have images
+      gsrnamespace: 6,
+      gsrlimit: Math.min(limit * 2, 40),
       prop: "imageinfo",
       iiprop: "url|extmetadata",
       iiurlwidth: 600,
       format: "json",
-      formatversion: 2,
-      origin: "*",
     },
-    timeout: 10000,
+    timeout: 12000,
   });
 
+  // format=json (v1) returns pages as an object keyed by pageid
   const pages = Object.values(res.data?.query?.pages || {});
   const results = pages
     .map(normalizeWikimedia)
@@ -297,6 +301,7 @@ async function getWikimediaArtwork(pageId) {
   if (cached) return cached;
 
   const res = await axios.get(WIKIMEDIA_API, {
+    headers: WIKIMEDIA_HEADERS,
     params: {
       action: "query",
       pageids: pageId,
@@ -304,8 +309,6 @@ async function getWikimediaArtwork(pageId) {
       iiprop: "url|extmetadata",
       iiurlwidth: 600,
       format: "json",
-      formatversion: 2,
-      origin: "*",
     },
     timeout: 8000,
   });
