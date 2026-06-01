@@ -63,9 +63,70 @@ function normalizeChicago(obj) {
     description: obj.description || obj.short_description || null,
     department: obj.department_title || null,
     creditLine: obj.credit_line || null,
-    sourceUrl: obj.id
-      ? `https://www.artic.edu/artworks/${obj.id}`
-      : null,
+    sourceUrl: obj.id ? `https://www.artic.edu/artworks/${obj.id}` : null,
+  };
+}
+
+function normalizeCleveland(obj) {
+  const image = obj.images?.web?.url || obj.images?.print?.url || null;
+  const thumb = obj.images?.web?.url || image;
+  return {
+    id: `cleveland:${obj.id}`,
+    source: "cleveland",
+    title: obj.title || "Untitled",
+    artist: obj.creators?.map((c) => c.description).join(", ") || "Unknown Artist",
+    year: obj.creation_date || null,
+    medium: obj.technique || null,
+    dimensions: obj.measurements || null,
+    imageUrl: image,
+    thumbnailUrl: thumb,
+    description: obj.wall_description || obj.did_you_know || null,
+    department: obj.department || null,
+    creditLine: obj.creditline || null,
+    sourceUrl: obj.url || null,
+  };
+}
+
+function normalizeWikimedia(page) {
+  const info = page.imageinfo?.[0];
+  if (!info?.url) return null;
+  const meta = info.extmetadata || {};
+
+  const stripHtml = (s) => (s || "").replace(/<[^>]*>/g, "").trim();
+
+  return {
+    id: `wikimedia:${page.pageid}`,
+    source: "wikimedia",
+    title: stripHtml(meta.ObjectName?.value) ||
+      (page.title || "").replace(/^File:/, "").replace(/\.[^/.]+$/, ""),
+    artist: stripHtml(meta.Artist?.value) || "Unknown Artist",
+    year: stripHtml(meta.DateTimeOriginal?.value || meta.Date?.value) || null,
+    medium: stripHtml(meta.Medium?.value) || null,
+    dimensions: null,
+    imageUrl: info.url,
+    thumbnailUrl: info.thumburl || info.url,
+    description: stripHtml(meta.ImageDescription?.value) || null,
+    department: null,
+    creditLine: stripHtml(meta.Credit?.value) || null,
+    sourceUrl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title || "")}`,
+  };
+}
+
+function normalizeRijksmuseum(obj) {
+  return {
+    id: `rijksmuseum:${obj.objectNumber}`,
+    source: "rijksmuseum",
+    title: obj.title || "Untitled",
+    artist: obj.principalOrFirstMaker || "Unknown Artist",
+    year: obj.dating?.presentingDate || null,
+    medium: obj.materials?.join(", ") || null,
+    dimensions: null,
+    imageUrl: obj.webImage?.url || null,
+    thumbnailUrl: obj.webImage?.url || null,
+    description: obj.plaqueDescriptionEnglish || null,
+    department: obj.productionPlaces?.[0] || null,
+    creditLine: null,
+    sourceUrl: obj.links?.web || null,
   };
 }
 
@@ -95,10 +156,7 @@ async function searchMet(query, limit = 20) {
     )
   );
 
-  const results = artworks.filter(
-    (a) => a !== null && a.imageUrl
-  );
-
+  const results = artworks.filter((a) => a !== null && a.imageUrl);
   cacheSet(cacheKey, results);
   return results;
 }
@@ -133,14 +191,12 @@ async function searchChicago(query, limit = 20) {
       limit,
       fields: CHICAGO_FIELDS,
       "query[term][is_public_domain]": true,
+      "boost[title]": 3,
     },
     timeout: 8000,
   });
 
-  const results = (res.data.data || [])
-    .map(normalizeChicago)
-    .filter((a) => a.imageUrl);
-
+  const results = (res.data.data || []).map(normalizeChicago).filter((a) => a.imageUrl);
   cacheSet(cacheKey, results);
   return results;
 }
@@ -163,61 +219,244 @@ async function getChicagoArtwork(id) {
   return result;
 }
 
+// ─── Cleveland Museum of Art API ─────────────────────────────────────────────
+
+const CLEVELAND_BASE = "https://openaccess.clevelandart.org/api";
+
+async function searchCleveland(query, limit = 20) {
+  const cacheKey = `cleveland:search:${query}:${limit}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const res = await axios.get(`${CLEVELAND_BASE}/artworks/`, {
+    params: { q: query, has_image: 1, cc0: 1, limit },
+    timeout: 10000,
+  });
+
+  const results = (res.data.data || [])
+    .map(normalizeCleveland)
+    .filter((a) => a.imageUrl);
+
+  cacheSet(cacheKey, results);
+  return results;
+}
+
+async function getClevelandArtwork(id) {
+  const cacheKey = `cleveland:object:${id}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const res = await axios.get(`${CLEVELAND_BASE}/artworks/${id}`, { timeout: 8000 });
+  const artwork = res.data.data;
+  if (!artwork) return null;
+
+  const result = normalizeCleveland(artwork);
+  cacheSet(cacheKey, result);
+  return result;
+}
+
+// ─── Wikimedia Commons API ───────────────────────────────────────────────────
+
+const WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php";
+
+const WIKIMEDIA_HEADERS = {
+  "User-Agent": "Immpression/1.0 (https://immpression.art; contact@immpression.art) axios",
+};
+
+async function searchWikimedia(query, limit = 20) {
+  const cacheKey = `wikimedia:search:${query}:${limit}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const res = await axios.get(WIKIMEDIA_API, {
+    headers: WIKIMEDIA_HEADERS,
+    params: {
+      action: "query",
+      generator: "search",
+      gsrsearch: `${query} painting`,
+      gsrnamespace: 6,
+      gsrlimit: Math.min(limit * 2, 40),
+      prop: "imageinfo",
+      iiprop: "url|extmetadata",
+      iiurlwidth: 600,
+      format: "json",
+    },
+    timeout: 12000,
+  });
+
+  // format=json (v1) returns pages as an object keyed by pageid
+  const pages = Object.values(res.data?.query?.pages || {});
+  const results = pages
+    .map(normalizeWikimedia)
+    .filter((a) => a && a.imageUrl && /\.(jpg|jpeg|png|gif)$/i.test(a.imageUrl))
+    .slice(0, limit);
+
+  cacheSet(cacheKey, results);
+  return results;
+}
+
+async function getWikimediaArtwork(pageId) {
+  const cacheKey = `wikimedia:object:${pageId}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const res = await axios.get(WIKIMEDIA_API, {
+    headers: WIKIMEDIA_HEADERS,
+    params: {
+      action: "query",
+      pageids: pageId,
+      prop: "imageinfo",
+      iiprop: "url|extmetadata",
+      iiurlwidth: 600,
+      format: "json",
+    },
+    timeout: 8000,
+  });
+
+  const pages = res.data?.query?.pages || {};
+  const page = Object.values(pages)[0];
+  if (!page) return null;
+
+  const result = normalizeWikimedia(page);
+  if (result) cacheSet(cacheKey, result);
+  return result;
+}
+
+// ─── Rijksmuseum API (optional — requires RIJKSMUSEUM_API_KEY in env) ────────
+
+const RIJKS_KEY = process.env.RIJKSMUSEUM_API_KEY;
+const RIJKS_BASE = "https://www.rijksmuseum.nl/api/en/collection";
+
+async function searchRijksmuseum(query, limit = 20) {
+  if (!RIJKS_KEY) return [];
+  const cacheKey = `rijksmuseum:search:${query}:${limit}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const res = await axios.get(RIJKS_BASE, {
+    params: { key: RIJKS_KEY, q: query, imgonly: true, ps: limit, s: "relevance" },
+    timeout: 10000,
+  });
+
+  const results = (res.data.artObjects || [])
+    .map(normalizeRijksmuseum)
+    .filter((a) => a.imageUrl);
+
+  cacheSet(cacheKey, results);
+  return results;
+}
+
+async function getRijksmuseumArtwork(objectNumber) {
+  if (!RIJKS_KEY) return null;
+  const cacheKey = `rijksmuseum:object:${objectNumber}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const res = await axios.get(`${RIJKS_BASE}/${objectNumber}`, {
+    params: { key: RIJKS_KEY },
+    timeout: 8000,
+  });
+
+  const obj = res.data.artObject;
+  if (!obj) return null;
+
+  const result = normalizeRijksmuseum(obj);
+  cacheSet(cacheKey, result);
+  return result;
+}
+
+// ─── Relevance scoring ───────────────────────────────────────────────────────
+
+function relevanceScore(artwork, query) {
+  const title = (artwork.title || "").toLowerCase();
+  const artist = (artwork.artist || "").toLowerCase();
+  const q = query.toLowerCase();
+  const terms = q.split(/\s+/);
+
+  if (title === q) return 100;
+  if (title.startsWith(q)) return 90;
+  if (title.includes(q)) return 80;
+  if (terms.every((t) => title.includes(t))) return 70;
+  const titleHits = terms.filter((t) => title.includes(t)).length;
+  if (titleHits > 0) return 50 + (titleHits / terms.length) * 20;
+  const artistHits = terms.filter((t) => artist.includes(t)).length;
+  if (artistHits > 0) return artistHits * 10;
+  return 0;
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
+export const VALID_SOURCES = ["met", "chicago", "cleveland", "wikimedia", "rijksmuseum"];
+
 /**
- * Search across one or both sources.
- * @param {string} query
- * @param {"met"|"chicago"|"all"} source
- * @param {number} limit  per-source limit
+ * Search across sources, sorted by title relevance.
  */
 export async function searchPublicArt(query, source = "all", limit = 20) {
-  if (source === "met") return searchMet(query, limit);
-  if (source === "chicago") return searchChicago(query, limit);
+  let results;
 
-  // Fan out to both, merge, filter nulls
-  const [metResults, chicagoResults] = await Promise.allSettled([
-    searchMet(query, limit),
-    searchChicago(query, limit),
-  ]);
+  if (source === "met")         results = await searchMet(query, limit);
+  else if (source === "chicago")     results = await searchChicago(query, limit);
+  else if (source === "cleveland")   results = await searchCleveland(query, limit);
+  else if (source === "wikimedia")   results = await searchWikimedia(query, limit);
+  else if (source === "rijksmuseum") results = await searchRijksmuseum(query, limit);
+  else {
+    // "all" — fan out to all sources in parallel
+    const settled = await Promise.allSettled([
+      searchMet(query, limit),
+      searchChicago(query, limit),
+      searchCleveland(query, limit),
+      searchWikimedia(query, limit),
+      searchRijksmuseum(query, limit),
+    ]);
+    results = settled
+      .filter((r) => r.status === "fulfilled")
+      .flatMap((r) => r.value);
+  }
 
-  return [
-    ...(metResults.status === "fulfilled" ? metResults.value : []),
-    ...(chicagoResults.status === "fulfilled" ? chicagoResults.value : []),
-  ];
+  return results.sort((a, b) => relevanceScore(b, query) - relevanceScore(a, query));
 }
 
 /**
- * Fetch a single artwork by source and original ID.
- * @param {"met"|"chicago"} source
- * @param {string|number} id
+ * Fetch a single artwork by source and ID.
  */
 export async function getPublicArtwork(source, id) {
-  if (source === "met") return getMetArtwork(id);
-  if (source === "chicago") return getChicagoArtwork(id);
+  if (source === "met")         return getMetArtwork(id);
+  if (source === "chicago")     return getChicagoArtwork(id);
+  if (source === "cleveland")   return getClevelandArtwork(id);
+  if (source === "wikimedia")   return getWikimediaArtwork(id);
+  if (source === "rijksmuseum") return getRijksmuseumArtwork(id);
   return null;
 }
 
+const FALLBACK_FEATURED = [
+  { source: "met", id: 436535 },
+  { source: "met", id: 459123 },
+  { source: "met", id: 437984 },
+  { source: "chicago", id: 27992 },
+  { source: "chicago", id: 14655 },
+  { source: "chicago", id: 28560 },
+];
+
 /**
- * Featured artworks — a curated set of well-known public domain works.
- * IDs are hardcoded to avoid an extra round-trip on first load.
+ * Featured artworks — reads the admin-curated list from DB.
+ * Falls back to hardcoded defaults if no list has been saved yet.
  */
 export async function getFeaturedArtworks() {
   const cacheKey = "featured";
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
-  const featured = [
-    { source: "met", id: 436535 },   // Monet - La Grenouillère
-    { source: "met", id: 459123 },   // Van Gogh - Wheat Field with Cypresses
-    { source: "met", id: 437984 },   // Degas - The Dance Class
-    { source: "chicago", id: 27992 }, // Seurat - A Sunday on La Grande Jatte
-    { source: "chicago", id: 14655 }, // El Greco - The Assumption of the Virgin
-    { source: "chicago", id: 28560 }, // Rembrandt - Old Man with a Gold Chain
-  ];
+  let refs;
+  try {
+    const FeaturedPublicArt = (await import("../models/featuredPublicArt.js")).default;
+    const doc = await FeaturedPublicArt.findOne({ key: "default" }).lean();
+    refs = doc && doc.artworks.length > 0 ? doc.artworks : FALLBACK_FEATURED;
+  } catch {
+    refs = FALLBACK_FEATURED;
+  }
 
   const results = await Promise.allSettled(
-    featured.map(({ source, id }) => getPublicArtwork(source, id))
+    refs.map(({ source, id }) => getPublicArtwork(source, String(id)))
   );
 
   const artworks = results
@@ -226,4 +465,17 @@ export async function getFeaturedArtworks() {
 
   cacheSet(cacheKey, artworks);
   return artworks;
+}
+
+/**
+ * Save the admin-curated list and bust the featured cache.
+ */
+export async function saveFeaturedArtworks(refs, updatedBy) {
+  const FeaturedPublicArt = (await import("../models/featuredPublicArt.js")).default;
+  await FeaturedPublicArt.findOneAndUpdate(
+    { key: "default" },
+    { artworks: refs, updatedBy },
+    { upsert: true, new: true }
+  );
+  cache.delete("featured");
 }

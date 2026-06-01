@@ -6,6 +6,7 @@ import {
   searchPublicArt,
   getPublicArtwork,
   getFeaturedArtworks,
+  VALID_SOURCES,
 } from "../../services/publicArt.js";
 
 const router = express.Router();
@@ -37,7 +38,7 @@ router.get("/search", async (req, res) => {
     return res.status(400).json({ success: false, error: "Query parameter 'q' is required" });
   }
 
-  const validSources = ["met", "chicago", "all"];
+  const validSources = [...VALID_SOURCES, "all"];
   if (!validSources.includes(source)) {
     return res.status(400).json({
       success: false,
