@@ -1177,13 +1177,15 @@ router.get("/my-orders", isUserAuthorized, async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const orders = await OrderModel.find({ userId: req.user._id })
+    const ordersQuery = { userId: req.user._id, status: { $ne: "pending" } };
+
+    const orders = await OrderModel.find(ordersQuery)
       .populate("imageId", "imageLink")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    const totalOrders = await OrderModel.countDocuments({ userId: req.user._id });
+    const totalOrders = await OrderModel.countDocuments(ordersQuery);
 
     const enrichedOrders = orders.map((order) => {
       const plain = order.toObject();
@@ -1654,7 +1656,7 @@ router.get("/my-sales", isUserAuthorized, async (req, res) => {
     const skip = (page - 1) * limit;
 
     const statusFilter = (req.query.status || "").trim();
-    const query = { artistUserId: req.user._id };
+    const query = { artistUserId: req.user._id, status: { $ne: "pending" } };
     if (statusFilter) {
       query.$or = [
         { status: new RegExp(`^${statusFilter}$`, "i") },
