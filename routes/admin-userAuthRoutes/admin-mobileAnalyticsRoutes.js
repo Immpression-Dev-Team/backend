@@ -78,8 +78,12 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
     const token = await getAccessToken();
     const startDate = dateObj(29); // 30 days inclusive
     const endDate   = dateObj(0);
+    const allTimeStart = { year: 2020, month: 1, day: 1 };
+    const monthStart   = dateObj(364); // ~12 months
 
-    const [dailyReport, platformReport] = await Promise.all([
+    const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+    const [dailyReport, platformReport, allTimeReport, monthlyReport] = await Promise.all([
       generateReport(publisherId, token, {
         dateRange: { startDate, endDate },
         dimensions: ["DATE"],
@@ -92,11 +96,24 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
         dimensions: ["PLATFORM"],
         metrics: ["ESTIMATED_EARNINGS", "IMPRESSIONS", "CLICKS", "AD_REQUESTS", "MATCHED_REQUESTS"],
       }),
+      generateReport(publisherId, token, {
+        dateRange: { startDate: allTimeStart, endDate },
+        dimensions: [],
+        metrics: ["ESTIMATED_EARNINGS", "IMPRESSIONS", "CLICKS"],
+      }),
+      generateReport(publisherId, token, {
+        dateRange: { startDate: monthStart, endDate },
+        dimensions: ["MONTH"],
+        metrics: ["ESTIMATED_EARNINGS", "IMPRESSIONS", "CLICKS"],
+        sortConditions: [{ dimension: "MONTH", order: "ASCENDING" }],
+        maxReportRows: 13,
+      }),
     ]);
 
-    // Both responses are arrays — extract only rows (skip header/footer)
     const dailyRows    = dailyReport.filter((r) => r.row).map((r) => r.row);
     const platformRows = platformReport.filter((r) => r.row).map((r) => r.row);
+    const allTimeRow   = allTimeReport.find((r) => r.row)?.row ?? null;
+    const monthlyRows  = monthlyReport.filter((r) => r.row).map((r) => r.row);
 
     const daily = dailyRows.map((row) => {
       const raw = row.dimensionValues?.DATE?.value || "";
@@ -108,13 +125,25 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
       };
     });
 
+    const monthly = monthlyRows.map((row) => {
+      const raw   = row.dimensionValues?.MONTH?.value || "";
+      const mon   = parseInt(raw.slice(4, 6));
+      const yr    = raw.slice(2, 4);
+      return {
+        month:       `${MONTH_NAMES[mon - 1]} '${yr}`,
+        earnings:    parseFloat(microsToDollars(row.metricValues?.ESTIMATED_EARNINGS?.microsValue).toFixed(2)),
+        impressions: intVal(row.metricValues?.IMPRESSIONS?.integerValue),
+        clicks:      intVal(row.metricValues?.CLICKS?.integerValue),
+      };
+    });
+
     const platforms = platformRows.map((row) => {
-      const name         = row.dimensionValues?.PLATFORM?.value || "UNKNOWN";
-      const earnings     = microsToDollars(row.metricValues?.ESTIMATED_EARNINGS?.microsValue);
-      const impressions  = intVal(row.metricValues?.IMPRESSIONS?.integerValue);
-      const clicks       = intVal(row.metricValues?.CLICKS?.integerValue);
-      const adRequests   = intVal(row.metricValues?.AD_REQUESTS?.integerValue);
-      const matched      = intVal(row.metricValues?.MATCHED_REQUESTS?.integerValue);
+      const name        = row.dimensionValues?.PLATFORM?.value || "UNKNOWN";
+      const earnings    = microsToDollars(row.metricValues?.ESTIMATED_EARNINGS?.microsValue);
+      const impressions = intVal(row.metricValues?.IMPRESSIONS?.integerValue);
+      const clicks      = intVal(row.metricValues?.CLICKS?.integerValue);
+      const adRequests  = intVal(row.metricValues?.AD_REQUESTS?.integerValue);
+      const matched     = intVal(row.metricValues?.MATCHED_REQUESTS?.integerValue);
       return {
         platform:    name === "ANDROID" ? "Android" : name === "IOS" ? "iOS" : name,
         earnings:    parseFloat(earnings.toFixed(2)),
@@ -125,9 +154,13 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
       };
     });
 
-    const totalEarnings   = daily.reduce((s, r) => s + r.earnings, 0);
+    const totalEarnings    = daily.reduce((s, r) => s + r.earnings, 0);
     const totalImpressions = daily.reduce((s, r) => s + r.impressions, 0);
-    const totalClicks     = daily.reduce((s, r) => s + r.clicks, 0);
+    const totalClicks      = daily.reduce((s, r) => s + r.clicks, 0);
+
+    const allTimeEarnings    = microsToDollars(allTimeRow?.metricValues?.ESTIMATED_EARNINGS?.microsValue);
+    const allTimeImpressions = intVal(allTimeRow?.metricValues?.IMPRESSIONS?.integerValue);
+    const allTimeClicks      = intVal(allTimeRow?.metricValues?.CLICKS?.integerValue);
 
     return res.json({
       success: true,
@@ -139,7 +172,13 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
           eCPM:        totalImpressions > 0 ? parseFloat((totalEarnings / totalImpressions * 1000).toFixed(2)) : 0,
           ctr:         totalImpressions > 0 ? parseFloat((totalClicks / totalImpressions * 100).toFixed(2))    : 0,
         },
+        allTime: {
+          earnings:    parseFloat(allTimeEarnings.toFixed(2)),
+          impressions: allTimeImpressions,
+          clicks:      allTimeClicks,
+        },
         daily,
+        monthly,
         platforms,
       },
     });
