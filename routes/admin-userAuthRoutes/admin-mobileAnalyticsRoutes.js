@@ -1,30 +1,36 @@
 // routes/admin-userAuthRoutes/admin-mobileAnalyticsRoutes.js
 // AdMob Reporting API — 30-day network report (earnings, impressions, clicks, eCPM)
 // Required env vars:
-//   ADMOB_PUBLISHER_ID       — e.g. "pub-8886964376457193"
-//   GA4_SERVICE_ACCOUNT_JSON — same service account used for GA4/Search Console
-//                              (service account email must be added as a user in AdMob settings)
+//   ADMOB_PUBLISHER_ID    — e.g. "pub-8886964376457193"
+//   ADMOB_CLIENT_ID       — OAuth Desktop client ID
+//   ADMOB_CLIENT_SECRET   — OAuth Desktop client secret
+//   ADMOB_REFRESH_TOKEN   — long-lived refresh token (from get-admob-token.mjs)
 
 import express from "express";
-import { GoogleAuth } from "google-auth-library";
 import { isAdminAuthorized } from "../../utils/authUtils.js";
 
 const router = express.Router();
-const ADMOB_SCOPE = "https://www.googleapis.com/auth/admob.readonly";
 
 async function getAccessToken() {
-  const raw = process.env.GA4_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw new Error("GA4_SERVICE_ACCOUNT_JSON not set");
-
-  const credentials = JSON.parse(raw);
-  if (credentials.private_key) {
-    credentials.private_key = credentials.private_key.replace(/\\n/g, "\n");
+  const { ADMOB_CLIENT_ID, ADMOB_CLIENT_SECRET, ADMOB_REFRESH_TOKEN } = process.env;
+  if (!ADMOB_CLIENT_ID || !ADMOB_CLIENT_SECRET || !ADMOB_REFRESH_TOKEN) {
+    throw new Error("ADMOB_CLIENT_ID / ADMOB_CLIENT_SECRET / ADMOB_REFRESH_TOKEN not set");
   }
 
-  const auth = new GoogleAuth({ credentials, scopes: [ADMOB_SCOPE] });
-  const client = await auth.getClient();
-  const token = await client.getAccessToken();
-  return token.token;
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id:     ADMOB_CLIENT_ID,
+      client_secret: ADMOB_CLIENT_SECRET,
+      refresh_token: ADMOB_REFRESH_TOKEN,
+      grant_type:    "refresh_token",
+    }),
+  });
+
+  const data = await res.json();
+  if (!data.access_token) throw new Error(data.error_description || "Failed to get AdMob access token");
+  return data.access_token;
 }
 
 function dateObj(daysAgo = 0) {
