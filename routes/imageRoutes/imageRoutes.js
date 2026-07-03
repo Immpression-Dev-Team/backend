@@ -763,7 +763,7 @@ router.get('/marketplace', async (req, res) => {
   try {
     const { page = 1, limit = 48, category, sort = 'newest' } = req.query;
 
-    const query = { stage: 'approved', soldStatus: 'unsold' };
+    const query = { stage: 'approved' };
 
     if (category) {
       if (!IMAGE_CATEGORY.includes(category)) {
@@ -782,19 +782,27 @@ router.get('/marketplace', async (req, res) => {
 
     const skip = (page - 1) * limit;
 
-    const [images, totalImages] = await Promise.all([
+    const [images, totalImages, soldCount] = await Promise.all([
       ImageModel.find(query)
         .sort(sortOrder)
         .limit(Number(limit))
         .skip(skip)
-        .select('_id userId artistName name description price imageLink category createdAt dimensions weight isSigned isFramed views'),
+        .select('_id userId artistName name description price imageLink category createdAt dimensions weight isSigned isFramed views soldStatus'),
       ImageModel.countDocuments(query),
+      ImageModel.countDocuments({ ...query, soldStatus: 'sold' }),
     ]);
+
+    const mappedImages = images.map((img) => ({
+      ...img.toObject(),
+      isSold: img.soldStatus === 'sold',
+    }));
 
     res.status(200).json({
       success: true,
-      images,
+      images: mappedImages,
       totalImages,
+      soldImages: soldCount,
+      availableImages: totalImages - soldCount,
       totalPages: Math.ceil(totalImages / limit),
       currentPage: Number(page),
     });
