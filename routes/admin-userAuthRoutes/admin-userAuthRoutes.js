@@ -163,7 +163,9 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
             views: image.views,
             category: image.category,
             createdAt: image.createdAt,
-            stage: image.stage, // ✅ Include the stage (useful for review)
+            stage: image.stage,
+            soldStatus: image.soldStatus || 'unsold',
+            isSold: image.soldStatus === 'sold',
         }));
 
         res.status(200).json({
