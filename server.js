@@ -34,6 +34,7 @@ import blockRoutes from "./routes/blockRoutes/blockRoutes.js";
 import adminReportRoutes from "./routes/admin-userAuthRoutes/admin-reportRoutes.js";
 import adminAnalyticsRoutes from "./routes/admin-userAuthRoutes/admin-analyticsRoutes.js";
 import adminSearchConsoleRoutes from "./routes/admin-userAuthRoutes/admin-searchConsoleRoutes.js";
+import adminMobileAnalyticsRoutes from "./routes/admin-userAuthRoutes/admin-mobileAnalyticsRoutes.js";
 import adminSettingsRoutes from "./routes/admin-userAuthRoutes/admin-settingsRoutes.js";
 import adminPublicArtRoutes from "./routes/admin-userAuthRoutes/admin-publicArtRoutes.js";
 
@@ -178,6 +179,7 @@ app.use("/api/admin", adminAuthRoutes);
 app.use("/api/admin/reports", adminReportRoutes);
 app.use("/api/admin/analytics/web", adminAnalyticsRoutes);
 app.use("/api/admin/analytics/search-console", adminSearchConsoleRoutes);
+app.use("/api/admin/analytics/mobile", adminMobileAnalyticsRoutes);
 app.use("/api/admin/settings", adminSettingsRoutes);
 app.use("/api/admin/public-art", adminPublicArtRoutes);
 
