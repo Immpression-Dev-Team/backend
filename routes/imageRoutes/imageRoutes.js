@@ -761,7 +761,7 @@ router.post('/image/:id/unique-views', isUserAuthorized, async (req, res) => {
 // GET /marketplace — all approved, unsold artworks (public, no auth required)
 router.get('/marketplace', async (req, res) => {
   try {
-    const { page = 1, limit = 48, category, sort = 'newest' } = req.query;
+    const { page = 1, limit = 48, category, sort = 'newest', q } = req.query;
 
     const query = { stage: 'approved' };
 
@@ -770,6 +770,16 @@ router.get('/marketplace', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Invalid category' });
       }
       query.category = category;
+    }
+
+    if (q && q.trim()) {
+      const regex = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      query.$or = [
+        { name: regex },
+        { artistName: regex },
+        { description: regex },
+        { category: regex },
+      ];
     }
 
     const sortMap = {
