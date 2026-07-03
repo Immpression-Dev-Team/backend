@@ -41,6 +41,9 @@ import adminPublicArtRoutes from "./routes/admin-userAuthRoutes/admin-publicArtR
 // Public domain art (proxy layer — no DB interaction)
 import publicArtRoutes from "./routes/publicArtRoutes/publicArtRoutes.js";
 
+// Unified search (marketplace + public domain)
+import searchRoutes from "./routes/searchRoutes/searchRoutes.js";
+
 // Contact form
 import contactRoutes from "./routes/contactRoutes/contactRoutes.js";
 
@@ -188,6 +191,9 @@ app.use("/api/web", webDonationsRoutes);
 
 // Public domain art (proxy — no DB)
 app.use("/public-art", publicArtRoutes);
+
+// Unified search
+app.use("/api/search", searchRoutes);
 
 // Contact form
 app.use("/", contactRoutes);
