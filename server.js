@@ -37,6 +37,8 @@ import adminSearchConsoleRoutes from "./routes/admin-userAuthRoutes/admin-search
 import adminMobileAnalyticsRoutes from "./routes/admin-userAuthRoutes/admin-mobileAnalyticsRoutes.js";
 import adminSettingsRoutes from "./routes/admin-userAuthRoutes/admin-settingsRoutes.js";
 import adminPublicArtRoutes from "./routes/admin-userAuthRoutes/admin-publicArtRoutes.js";
+import adminFeaturedArticlesRoutes from "./routes/admin-userAuthRoutes/admin-featuredArticlesRoutes.js";
+import featuredArticlesRoutes from "./routes/featuredArticlesRoutes/featuredArticlesRoutes.js";
 
 // Public domain art (proxy layer — no DB interaction)
 import publicArtRoutes from "./routes/publicArtRoutes/publicArtRoutes.js";
@@ -185,6 +187,10 @@ app.use("/api/admin/analytics/search-console", adminSearchConsoleRoutes);
 app.use("/api/admin/analytics/mobile", adminMobileAnalyticsRoutes);
 app.use("/api/admin/settings", adminSettingsRoutes);
 app.use("/api/admin/public-art", adminPublicArtRoutes);
+app.use("/api/admin/articles", adminFeaturedArticlesRoutes);
+
+// Public featured articles (web-app landing page)
+app.use("/api/articles", featuredArticlesRoutes);
 
 // Web donations (platform-only; includes /donations/create-checkout-session and /donations/webhook)
 app.use("/api/web", webDonationsRoutes);
