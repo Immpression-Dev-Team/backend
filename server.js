@@ -40,6 +40,8 @@ import adminPublicArtRoutes from "./routes/admin-userAuthRoutes/admin-publicArtR
 import adminFeaturedArticlesRoutes from "./routes/admin-userAuthRoutes/admin-featuredArticlesRoutes.js";
 import adminFinanceRoutes from "./routes/admin-userAuthRoutes/admin-financeRoutes.js";
 import featuredArticlesRoutes from "./routes/featuredArticlesRoutes/featuredArticlesRoutes.js";
+import adminBlogRoutes from "./routes/admin-userAuthRoutes/admin-blogRoutes.js";
+import blogRoutes from "./routes/blogRoutes/blogRoutes.js";
 
 // Public domain art (proxy layer — no DB interaction)
 import publicArtRoutes from "./routes/publicArtRoutes/publicArtRoutes.js";
@@ -189,10 +191,13 @@ app.use("/api/admin/analytics/mobile", adminMobileAnalyticsRoutes);
 app.use("/api/admin/settings", adminSettingsRoutes);
 app.use("/api/admin/public-art", adminPublicArtRoutes);
 app.use("/api/admin/articles", adminFeaturedArticlesRoutes);
+app.use("/api/admin/blog", adminBlogRoutes);
 app.use("/api/admin/finance", adminFinanceRoutes);
 
 // Public featured articles (web-app landing page)
 app.use("/api/articles", featuredArticlesRoutes);
+// Public blog posts
+app.use("/api/blog", blogRoutes);
 
 // Web donations (platform-only; includes /donations/create-checkout-session and /donations/webhook)
 app.use("/api/web", webDonationsRoutes);
