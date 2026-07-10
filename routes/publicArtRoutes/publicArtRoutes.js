@@ -65,11 +65,10 @@ router.get("/search", async (req, res) => {
 router.get("/:source/:id", async (req, res) => {
   const { source, id } = req.params;
 
-  const validSources = ["met", "chicago"];
-  if (!validSources.includes(source)) {
+  if (!VALID_SOURCES.includes(source)) {
     return res.status(400).json({
       success: false,
-      error: `Invalid source. Must be one of: ${validSources.join(", ")}`,
+      error: `Invalid source. Must be one of: ${VALID_SOURCES.join(", ")}`,
     });
   }
 
