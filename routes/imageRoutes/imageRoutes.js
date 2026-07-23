@@ -851,5 +851,34 @@ router.get('/marketplace/:id', async (req, res) => {
   }
 });
 
+// GET /profile/:userId/images — public gallery for any user (approved + sold artwork only)
+// No auth required so guest users and profile visitors can see an artist's portfolio.
+router.get('/profile/:userId/images', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, error: 'Invalid user ID' });
+    }
+
+    const images = await ImageModel.find({
+      userId,
+      stage: { $in: ['approved', 'sold'] },
+    })
+      .sort({ createdAt: -1 })
+      .select('_id userId artistName name imageLink originalImageLink price category stage soldStatus views likes createdAt dimensions weight isSigned isFramed');
+
+    const mapped = images.map((img) => ({
+      ...img.toObject(),
+      isSold: img.stage === 'sold' || String(img.soldStatus || '').toLowerCase() === 'sold',
+    }));
+
+    res.status(200).json({ success: true, images: mapped });
+  } catch (error) {
+    console.error('Error fetching public user images:', error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
 // Exporting the router as the default export
 export default router;
