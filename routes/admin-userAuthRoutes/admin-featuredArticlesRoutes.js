@@ -1,5 +1,7 @@
 import express from "express";
 import { isAdminAuthorized } from "../../utils/authUtils.js";
+import { requireRole, requireOwnerOrFullAccess } from "../../utils/adminAuthorization.js";
+import { FULL_ACCESS_ROLES } from "../../constants/adminRoles.js";
 import FeaturedArticle from "../../models/featuredArticle.js";
 
 const router = express.Router();
@@ -22,7 +24,7 @@ router.post("/", isAdminAuthorized, async (req, res) => {
     return res.status(400).json({ success: false, error: "title, url, imageUrl, and publishedAt are required" });
   }
   try {
-    const article = await FeaturedArticle.create({ title, url, imageUrl, publication, publishedAt, order: order || 0 });
+    const article = await FeaturedArticle.create({ title, url, imageUrl, publication, publishedAt, order: order || 0, createdBy: req.admin._id });
     res.status(201).json({ success: true, data: article });
   } catch (e) {
     console.error("POST /api/admin/articles error:", e);
@@ -31,7 +33,7 @@ router.post("/", isAdminAuthorized, async (req, res) => {
 });
 
 // PUT /api/admin/articles/:id — update
-router.put("/:id", isAdminAuthorized, async (req, res) => {
+router.put("/:id", isAdminAuthorized, requireOwnerOrFullAccess(FeaturedArticle), async (req, res) => {
   const { title, url, imageUrl, publication, publishedAt, order } = req.body;
   try {
     const article = await FeaturedArticle.findByIdAndUpdate(
@@ -48,7 +50,7 @@ router.put("/:id", isAdminAuthorized, async (req, res) => {
 });
 
 // DELETE /api/admin/articles/:id
-router.delete("/:id", isAdminAuthorized, async (req, res) => {
+router.delete("/:id", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
   try {
     const article = await FeaturedArticle.findByIdAndDelete(req.params.id);
     if (!article) return res.status(404).json({ success: false, error: "Article not found" });

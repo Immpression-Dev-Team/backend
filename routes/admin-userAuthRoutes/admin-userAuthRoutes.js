@@ -6,6 +6,8 @@ import jwt from "jsonwebtoken";
 import AdminUserModel from "../../models/admin-users.js";
 import UserModel from "../../models/users.js"; // Import the User model
 import { isAdminAuthorized, generateAdminAuthToken, getAuthToken } from "../../utils/authUtils.js";
+import { requireRole } from "../../utils/adminAuthorization.js";
+import { FULL_ACCESS_ROLES } from "../../constants/adminRoles.js";
 import ImageModel from "../../models/images.js";
 import cloudinary from "cloudinary";
 import Notification, { NOTIFICATION_TYPE } from "../../models/notifications.js";
@@ -57,7 +59,7 @@ router.post("/login", async (req, res) => {
         console.log("✅ Password matches!");
 
         const token = generateAdminAuthToken(admin, '1hr');
-        res.status(200).json({ message: "Admin logged in", token, email: admin.email });
+        res.status(200).json({ message: "Admin logged in", token, email: admin.email, role: admin.role, id: admin._id });
     } catch (error) {
         console.error("❌ Server error:", error);
         res.status(500).json({ message: "Server error", error });
@@ -95,7 +97,7 @@ router.get("/dashboard", isAdminAuthorized, (req, res) => {
 });
 
 // ✅ NEW: Admin-only route to get all images (with pagination)
-router.get("/all_images", isAdminAuthorized, async (req, res) => {
+router.get("/all_images", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
     try {
         // define pagination metadata (curr page, #items per page) + its default value
         const page = parseInt(req.query.page) || 1;
@@ -187,7 +189,7 @@ router.get("/all_images", isAdminAuthorized, async (req, res) => {
 });
 
 // ✅ NEW: Admin-only route to get images statistics (counting total, pending, etc.)
-router.get("/all_images/stats", isAdminAuthorized, async (_, res) => {
+router.get("/all_images/stats", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (_, res) => {
     try {
         const totalCount = await ImageModel.countDocuments();
 
@@ -221,7 +223,7 @@ router.get("/all_images/stats", isAdminAuthorized, async (_, res) => {
 });
 
 // ✅ Get a single artwork by ID
-router.get("/art/:id", isAdminAuthorized, async (req, res) => {
+router.get("/art/:id", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
     try {
         const { id } = req.params;
         const art = await ImageModel.findById(id);
@@ -238,7 +240,7 @@ router.get("/art/:id", isAdminAuthorized, async (req, res) => {
 });
 
 // ✅ Admin-only route to approve an artwork
-router.put("/art/:id/approve", isAdminAuthorized, async (req, res) => {
+router.put("/art/:id/approve", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
     try {
         const { id } = req.params;
         const adminEmail = req.admin.email;
@@ -308,7 +310,7 @@ router.put("/art/:id/approve", isAdminAuthorized, async (req, res) => {
 
 
 // ✅ Admin-only route to reject an artwork
-router.put("/art/:id/reject", isAdminAuthorized, async (req, res) => {
+router.put("/art/:id/reject", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
     try {
         const { id } = req.params;
         const { rejectionMessage } = req.body;
@@ -365,7 +367,7 @@ router.put("/art/:id/reject", isAdminAuthorized, async (req, res) => {
 
 
 // ✅ Admin-only route to get all users
-router.get("/users", isAdminAuthorized, async (req, res) => {
+router.get("/users", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
     try {
         const users = await UserModel.find(
             {},
@@ -384,7 +386,7 @@ router.get("/users", isAdminAuthorized, async (req, res) => {
 });
 
 // ✅ Admin-only route to get a single user by ID with all details
-router.get("/user/:id", isAdminAuthorized, async (req, res) => {
+router.get("/user/:id", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
     try {
         const { id } = req.params;
         const user = await UserModel.findById(id).select("-password"); // ✅ Exclude password for security
@@ -401,7 +403,7 @@ router.get("/user/:id", isAdminAuthorized, async (req, res) => {
 });
 
 // ✅ Admin-only route to delete an artwork by ID and remove it from Cloudinary
-router.delete("/art/:id", isAdminAuthorized, async (req, res) => {
+router.delete("/art/:id", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
     try {
         const { id } = req.params;
 
@@ -452,7 +454,7 @@ router.delete("/art/:id", isAdminAuthorized, async (req, res) => {
 });
 
 // ✅ Admin-only route to delete a user and their Cloudinary profile picture
-router.delete("/user/:id", isAdminAuthorized, async (req, res) => {
+router.delete("/user/:id", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
     try {
         const { id } = req.params;
 

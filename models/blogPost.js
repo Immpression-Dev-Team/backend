@@ -8,6 +8,7 @@ const blogPostSchema = new mongoose.Schema(
     coverImageUrl: { type: String, required: true, trim: true },
     published: { type: Boolean, default: false },
     publishedAt: { type: Date },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "AdminUser" },
   },
   { timestamps: true }
 );

@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 // import bcrypt from 'bcryptjs';
 import bcrypt from "bcrypt";
+import { ADMIN_ROLE_VALUES } from "../constants/adminRoles.js";
 
 const { Schema } = mongoose;
 
@@ -30,7 +31,7 @@ const AdminUserSchema = new Schema(
     },
     role: {
       type: String,
-      enum: ["super-admin", "moderator"],
+      enum: ADMIN_ROLE_VALUES,
       required: true,
     },
   },

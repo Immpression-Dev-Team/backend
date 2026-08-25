@@ -1,8 +1,13 @@
 import express from "express";
 import { isAdminAuthorized } from "../../utils/authUtils.js";
+import { requireRole } from "../../utils/adminAuthorization.js";
+import { FULL_ACCESS_ROLES } from "../../constants/adminRoles.js";
 import FinanceEntry from "../../models/financeEntry.js";
 
 const router = express.Router();
+
+// Finance is only accessible to full-access admins (Content Editor is excluded).
+router.use(isAdminAuthorized, requireRole(FULL_ACCESS_ROLES));
 
 // GET /api/admin/finance — all entries sorted by date desc
 router.get("/", isAdminAuthorized, async (_req, res) => {

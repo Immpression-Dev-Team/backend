@@ -1,5 +1,7 @@
 import express from "express";
 import { isAdminAuthorized } from "../../utils/authUtils.js";
+import { requireRole, requireOwnerOrFullAccess } from "../../utils/adminAuthorization.js";
+import { FULL_ACCESS_ROLES } from "../../constants/adminRoles.js";
 import BlogPost from "../../models/blogPost.js";
 
 const router = express.Router();
@@ -46,6 +48,7 @@ router.post("/", isAdminAuthorized, async (req, res) => {
       coverImageUrl,
       published: !!published,
       publishedAt: published ? new Date() : undefined,
+      createdBy: req.admin._id,
     });
     res.status(201).json({ success: true, data: post });
   } catch (e) {
@@ -55,7 +58,7 @@ router.post("/", isAdminAuthorized, async (req, res) => {
 });
 
 // PUT /api/admin/blog/:id
-router.put("/:id", isAdminAuthorized, async (req, res) => {
+router.put("/:id", isAdminAuthorized, requireOwnerOrFullAccess(BlogPost), async (req, res) => {
   const { title, body, coverImageUrl, published } = req.body;
   try {
     const existing = await BlogPost.findById(req.params.id);
@@ -79,7 +82,7 @@ router.put("/:id", isAdminAuthorized, async (req, res) => {
 });
 
 // DELETE /api/admin/blog/:id
-router.delete("/:id", isAdminAuthorized, async (req, res) => {
+router.delete("/:id", isAdminAuthorized, requireRole(FULL_ACCESS_ROLES), async (req, res) => {
   try {
     const post = await BlogPost.findByIdAndDelete(req.params.id);
     if (!post) return res.status(404).json({ success: false, error: "Post not found" });

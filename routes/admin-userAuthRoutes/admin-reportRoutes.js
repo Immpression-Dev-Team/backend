@@ -10,9 +10,14 @@ import UserModel from "../../models/users.js";
 import ImageModel from "../../models/images.js";
 import Notification, { NOTIFICATION_TYPE } from "../../models/notifications.js";
 import { isAdminAuthorized } from "../../utils/authUtils.js";
+import { requireRole } from "../../utils/adminAuthorization.js";
+import { FULL_ACCESS_ROLES } from "../../constants/adminRoles.js";
 import cloudinary from "cloudinary";
 
 const router = express.Router();
+
+// Reports are only accessible to full-access admins (Content Editor is excluded).
+router.use(isAdminAuthorized, requireRole(FULL_ACCESS_ROLES));
 
 // Cloudinary config
 cloudinary.v2.config({

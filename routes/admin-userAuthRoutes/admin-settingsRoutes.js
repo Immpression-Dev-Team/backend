@@ -1,11 +1,16 @@
 import express from "express";
 import { isAdminAuthorized } from "../../utils/authUtils.js";
+import { requireRole } from "../../utils/adminAuthorization.js";
+import { FULL_ACCESS_ROLES } from "../../constants/adminRoles.js";
 import AdminSettings from "../../models/adminSettings.js";
 import UserModel from "../../models/users.js";
 import ImageModel from "../../models/images.js";
 import OrderModel from "../../models/orders.js";
 
 const router = express.Router();
+
+// Settings are only accessible to full-access admins (Content Editor is excluded).
+router.use(isAdminAuthorized, requireRole(FULL_ACCESS_ROLES));
 
 // ─── Helper: get or create the singleton settings doc ───────────────────────
 async function getOrCreateSettings() {

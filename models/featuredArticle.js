@@ -8,6 +8,7 @@ const featuredArticleSchema = new mongoose.Schema(
     publication: { type: String, trim: true, default: "" },
     publishedAt: { type: Date, required: true },
     order:       { type: Number, default: 0 },
+    createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: "AdminUser" },
   },
   { timestamps: true }
 );
