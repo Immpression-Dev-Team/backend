@@ -33,7 +33,12 @@ router.get("/:code", async (req, res) => {
 // POST /api/invite/:code/event — public. Records a funnel event (page view,
 // role selection, store click) for the referral behind this code. Response
 // never contains anything about the referral beyond success/failure.
-router.post("/:code/event", async (req, res) => {
+//
+// The web-app sends this cross-origin via sendBeacon/fetch with a text/plain
+// content type (to stay a CORS-simple request — see referralTracking.js on
+// the client), so the JSON body parser here must parse regardless of the
+// declared content type, not just "application/json" like the global parser.
+router.post("/:code/event", express.json({ type: () => true }), async (req, res) => {
   try {
     const { code } = req.params;
     const { type, role, platform } = req.body;
