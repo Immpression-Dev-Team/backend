@@ -76,6 +76,86 @@ export const generateOtpEmailTemplate = (otp, name) => `
 `;
 
 // --------------------
+// Admin Sign-In Verification Email Template
+// --------------------
+export const generateAdminOtpEmailTemplate = (otp, name) => `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Sign-In Verification</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f9f9f9;
+      margin: 0;
+      padding: 0;
+    }
+    .email-container {
+      max-width: 600px;
+      margin: 20px auto;
+      background-color: #ffffff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .email-header {
+      text-align: center;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 10px;
+      margin-bottom: 20px;
+    }
+    .email-header h1 {
+      font-size: 24px;
+      color: #333;
+      margin: 0;
+    }
+    .email-body {
+      text-align: center;
+      color: #555;
+    }
+    .otp {
+      font-size: 32px;
+      font-weight: bold;
+      letter-spacing: 4px;
+      color: #040e2e;
+      margin: 20px 0;
+    }
+    .warning {
+      color: #b91c1c;
+      font-size: 13px;
+    }
+    .email-footer {
+      text-align: center;
+      font-size: 14px;
+      color: #999;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="email-container">
+    <div class="email-header">
+      <h1>Immpression Admin Sign-In</h1>
+    </div>
+    <div class="email-body">
+      <p>Hello ${name},</p>
+      <p>Use the code below to finish signing in to the Immpression admin panel:</p>
+      <div class="otp">${otp}</div>
+      <p>This code is valid for the next 10 minutes. Do not share it with anyone.</p>
+      <p class="warning">If you didn't try to sign in, secure your account immediately.</p>
+    </div>
+    <div class="email-footer">
+      <p>&copy; ${new Date().getFullYear()} Immpression. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+// --------------------
 // Password Reset Email Template
 // --------------------
 export const generatePasswordResetEmailTemplate = (otp, name) => `

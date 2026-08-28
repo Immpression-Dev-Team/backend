@@ -24,6 +24,9 @@ export const generateAdminAuthToken = (admin, expiresIn) => {
   });
 };
 
+// Admin sessions last 2 hours before requiring a fresh sign-in (and 2FA).
+export const ADMIN_TOKEN_EXPIRY = '2h';
+
 export const setAuthCookies = (res, value) => {
   res.cookie('auth-token', value, {
     httpOnly: true,

@@ -5,14 +5,16 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import AdminUserModel from "../../models/admin-users.js";
 import UserModel from "../../models/users.js"; // Import the User model
-import { isAdminAuthorized, generateAdminAuthToken, getAuthToken } from "../../utils/authUtils.js";
+import { isAdminAuthorized, generateAdminAuthToken, getAuthToken, ADMIN_TOKEN_EXPIRY, otpRateLimiter } from "../../utils/authUtils.js";
 import { requireRole } from "../../utils/adminAuthorization.js";
 import { FULL_ACCESS_ROLES } from "../../constants/adminRoles.js";
 import ImageModel from "../../models/images.js";
 import cloudinary from "cloudinary";
 import Notification, { NOTIFICATION_TYPE } from "../../models/notifications.js";
 import sendEmail from "../../services/email.js"; // your nodemailer wrapper
+import { generateAdminOtpEmailTemplate } from "../../utils/email.js";
 import OrderModel from "../../models/orders.js";
+import AdminOTP from "../../models/adminOtp.js";
 
 
 const router = express.Router();
@@ -24,17 +26,15 @@ cloudinary.v2.config({
     api_secret: process.env.CLOUDINARY_SECRET,
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", otpRateLimiter, async (req, res) => {
     const { email, password } = req.body;
 
     try {
-        console.log(
-            "🔍 Searching for admin with email:",
-            email.trim().toLowerCase()
-        );
+        const normalizedEmail = email.trim().toLowerCase();
+        console.log("🔍 Searching for admin with email:", normalizedEmail);
 
         const admin = await AdminUserModel.findOne({
-            email: email.trim().toLowerCase(),
+            email: normalizedEmail,
         }).select("+password");
 
         if (!admin) {
@@ -42,24 +42,61 @@ router.post("/login", async (req, res) => {
             return res.status(401).json({ message: "Admin not found" });
         }
 
-        console.log("✅ Admin found:", admin.email);
-        console.log("🔑 Stored Hashed Password:", admin.password);
-        console.log("🔑 Entered Plain Password:", password);
-
-        // ✅ Use argon2 to verify password
-        // const isMatch = await argon2.verify(admin.password, password);
         const isMatch = await bcrypt.compare(password, admin.password);
-        console.log("🔎 Password Match Result:", isMatch);
 
         if (!isMatch) {
             console.log("❌ Password does not match");
             return res.status(401).json({ message: "Invalid credentials" });
         }
 
-        console.log("✅ Password matches!");
+        // Password verified — do NOT issue a token yet. A 2-step email code
+        // is the real access gate, since a browser-saved password alone
+        // proves nothing about who's sitting at the keyboard.
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const codeHash = await bcrypt.hash(otp, 10);
+        await AdminOTP.findOneAndUpdate(
+            { email: admin.email },
+            { codeHash, createdAt: new Date() },
+            { upsert: true }
+        );
 
-        const token = generateAdminAuthToken(admin, '1hr');
-        res.status(200).json({ message: "Admin logged in", token, email: admin.email, role: admin.role, id: admin._id });
+        await sendEmail(admin.email, "Immpression Admin — Sign-in code", generateAdminOtpEmailTemplate(otp, admin.name));
+
+        console.log("✅ Password matched, sign-in code emailed to:", admin.email);
+        res.status(200).json({ success: true, requires2FA: true, email: admin.email });
+    } catch (error) {
+        console.error("❌ Server error:", error);
+        res.status(500).json({ message: "Server error", error });
+    }
+});
+
+// Second factor: verify the emailed sign-in code and, only then, issue the
+// real admin JWT.
+router.post("/login/verify-otp", otpRateLimiter, async (req, res) => {
+    const { email, otp } = req.body;
+
+    try {
+        const normalizedEmail = (email || "").trim().toLowerCase();
+        const record = await AdminOTP.findOne({ email: normalizedEmail });
+
+        if (!record) {
+            return res.status(401).json({ success: false, error: "Invalid or expired code" });
+        }
+
+        const isMatch = await bcrypt.compare(otp || "", record.codeHash);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, error: "Invalid or expired code" });
+        }
+
+        await AdminOTP.deleteOne({ email: normalizedEmail });
+
+        const admin = await AdminUserModel.findOne({ email: normalizedEmail });
+        if (!admin) {
+            return res.status(401).json({ success: false, error: "Admin not found" });
+        }
+
+        const token = generateAdminAuthToken(admin, ADMIN_TOKEN_EXPIRY);
+        res.status(200).json({ success: true, message: "Admin logged in", token, email: admin.email, role: admin.role, id: admin._id });
     } catch (error) {
         console.error("❌ Server error:", error);
         res.status(500).json({ message: "Server error", error });
@@ -77,8 +114,8 @@ router.post('/renew_token', isAdminAuthorized, (req, res) => {
                 return res.status(401).send('Invalid refresh token');
             }
 
-            const newToken = generateAdminAuthToken(decoded, '1hr');
-            res.status(200).json({ token: newToken });
+            const newToken = generateAdminAuthToken(decoded, ADMIN_TOKEN_EXPIRY);
+            res.status(200).json({ success: true, token: newToken });
         })
     }
     catch (error) {
