@@ -10,6 +10,7 @@ export const REFERRAL_EVENT_TYPE = Object.freeze({
 export const REFERRAL_ROLE = Object.freeze({
   ARTIST: "ARTIST",
   ART_LOVER: "ART_LOVER",
+  BOTH: "BOTH",
 });
 
 const referralEventSchema = new mongoose.Schema(

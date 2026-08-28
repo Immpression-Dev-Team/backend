@@ -31,6 +31,7 @@ function emptyStats() {
     pageViews: 0,
     artistSelections: 0,
     artLoverSelections: 0,
+    bothSelections: 0,
     totalRoleSelections: 0,
     appStoreClicks: 0,
     playStoreClicks: 0,
@@ -74,6 +75,7 @@ async function statsByReferralId(referralIds) {
         stats.totalRoleSelections += row.count;
         if (row._id.role === REFERRAL_ROLE.ARTIST) stats.artistSelections += row.count;
         if (row._id.role === REFERRAL_ROLE.ART_LOVER) stats.artLoverSelections += row.count;
+        if (row._id.role === REFERRAL_ROLE.BOTH) stats.bothSelections += row.count;
         break;
       case REFERRAL_EVENT_TYPE.APP_STORE_CLICK:
         stats.appStoreClicks += row.count;
