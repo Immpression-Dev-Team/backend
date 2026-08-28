@@ -116,6 +116,32 @@ router.get("/", async (_req, res) => {
   }
 });
 
+// GET /api/admin/referrals/:id/stats — aggregated funnel stats + recent events for one referral
+router.get("/:id/stats", async (req, res) => {
+  try {
+    const referral = await Referral.findById(req.params.id);
+    if (!referral) return res.status(404).json({ success: false, error: "Referral not found" });
+
+    const statsMap = await statsByReferralId([referral._id]);
+    const recentEvents = await ReferralEvent.find({ referral: referral._id })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .select("type role platform createdAt");
+
+    res.json({
+      success: true,
+      data: {
+        referral: toPublic(referral),
+        stats: statsMap[referral._id.toString()],
+        recentEvents,
+      },
+    });
+  } catch (e) {
+    console.error("GET /api/admin/referrals/:id/stats error:", e);
+    res.status(500).json({ success: false, error: "Failed to fetch referral stats" });
+  }
+});
+
 // POST /api/admin/referrals — create (code is always server-generated)
 router.post("/", async (req, res) => {
   const { name, internalLabel } = req.body;
