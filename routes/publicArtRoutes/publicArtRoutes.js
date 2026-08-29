@@ -6,6 +6,7 @@ import {
   searchPublicArt,
   getPublicArtwork,
   getFeaturedArtworks,
+  getRelatedArtworks,
   VALID_SOURCES,
 } from "../../services/publicArt.js";
 
@@ -58,9 +59,34 @@ router.get("/search", async (req, res) => {
 });
 
 /**
+ * GET /public-art/:source/:id/related?limit=7
+ * Lightweight "More Public Domain Art" recommendations for the detail page.
+ */
+router.get("/:source/:id/related", async (req, res) => {
+  const { source, id } = req.params;
+
+  if (!VALID_SOURCES.includes(source)) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid source. Must be one of: ${VALID_SOURCES.join(", ")}`,
+    });
+  }
+
+  const limitNum = Math.min(Math.max(parseInt(req.query.limit) || 7, 1), 12);
+
+  try {
+    const related = await getRelatedArtworks(source, id, limitNum);
+    res.json({ success: true, data: related });
+  } catch (e) {
+    console.error(`GET /public-art/${source}/${id}/related error:`, e.message);
+    res.status(500).json({ success: false, error: "Failed to fetch related artworks" });
+  }
+});
+
+/**
  * GET /public-art/:source/:id
  * Fetch a single artwork by source and ID.
- * source: "met" | "chicago"
+ * source: "met" | "chicago" | "cleveland" | "wikimedia" | "rijksmuseum"
  */
 router.get("/:source/:id", async (req, res) => {
   const { source, id } = req.params;

@@ -22,17 +22,136 @@ function cacheSet(key, data) {
   cache.set(key, { data, timestamp: Date.now() });
 }
 
+// ─── Institution display names ─────────────────────────────────────────────
+
+export const INSTITUTION_NAMES = {
+  met: "The Metropolitan Museum of Art",
+  chicago: "Art Institute of Chicago",
+  cleveland: "Cleveland Museum of Art",
+  wikimedia: "Wikimedia Commons",
+  rijksmuseum: "Rijksmuseum",
+};
+
+// ─── Reusable artwork field cleaner ─────────────────────────────────────────
+//
+// Wikimedia Commons embeds machine-readable Wikidata "QuickStatements" inside
+// hidden markup on nearly every structured field (date, title/label, creator):
+//   between 1503 and 1506<div style="display:none">date QS:P571,+1503-00-00T00:00:00Z/8,P1319,...</div>
+// A plain HTML-tag strip removes the tags but leaves that inner text behind,
+// which is exactly the "...date QS:P571,..." garbage that was leaking into the UI.
+// This cleaner removes the hidden elements (and their text) first, then strips
+// any remaining tags/entities. It is source-agnostic (safe/idempotent on
+// already-clean Met/Chicago/Cleveland text) so it is used both per-field when
+// normalizing a fresh Wikimedia response, and as a defensive re-clean pass
+// over any already-persisted artwork record (see sanitizeArtworkRecord below —
+// artworks curated via the admin panel and saved to MongoDB before this fix
+// existed still carry the raw, unclean values on disk).
+function cleanArtworkText(raw) {
+  if (raw === null || raw === undefined) return null;
+  let s = String(raw);
+  if (!s.trim()) return null;
+
+  // Remove entire hidden elements (Commons' Wikidata QuickStatement blocks,
+  // and any other display:none template output) — content included, not just tags.
+  s = s.replace(
+    /<(div|span)\b[^>]*\bstyle\s*=\s*["'][^"']*display\s*:\s*none[^"']*["'][^>]*>[\s\S]*?<\/\1>/gi,
+    " "
+  );
+
+  // Safety net: a bare Wikidata quickstatement fragment even without a wrapper,
+  // e.g. "date QS:P571,+1503-00-00T00:00:00Z/8,P1319,+1503-00-00T00:00:00Z/9".
+  // No leading \b: text saved by the old (pre-fix) cleaner often has the
+  // keyword glued directly onto the preceding word with no space at all
+  // (e.g. "1506date QS:P571,...", from stripping a tag with no surrounding
+  // whitespace), so a strict word-boundary would never match it.
+  s = s.replace(/(?:date|title|label|creator|depicts)\s+QS:P?\d*(?:,[^\s<]+)*/gi, " ");
+  s = s.replace(/\bQS:P?\d+(?:,[^\s<]+)*/gi, " ");
+
+  // Strip remaining HTML tags
+  s = s.replace(/<[^>]*>/g, " ");
+
+  // Decode the handful of entities Commons actually uses in these fields
+  s = s
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+
+  s = s.replace(/\s+/g, " ").trim();
+  s = collapseTrailingDuplicate(s);
+  return s || null;
+}
+
+// Commons sometimes concatenates the same phrase twice in one field (e.g. a
+// per-language title block followed by the default-language block ends up as
+// "Polish: Mona Lisa Mona Lisa" once hidden markup is removed). Generically
+// collapse an exact, case-insensitive whole-word-phrase repeated at the end
+// of the string — "X Y Y" -> "X Y" — without touching normal prose.
+function collapseTrailingDuplicate(s) {
+  const words = s.split(" ");
+  const maxPhraseLen = Math.floor(words.length / 2);
+  for (let phraseLen = maxPhraseLen; phraseLen >= 1; phraseLen--) {
+    const tail = words.slice(-phraseLen).join(" ").toLowerCase();
+    const beforeTail = words.slice(-(phraseLen * 2), -phraseLen).join(" ").toLowerCase();
+    if (tail && tail === beforeTail) {
+      return words.slice(0, -phraseLen).join(" ");
+    }
+  }
+  return s;
+}
+
+// Extra guard for the title specifically: Commons' ObjectName field can carry
+// dozens of hidden per-language "label QS:L**" blocks. If cleaning couldn't
+// fully recover a plausible short title, treat it as unusable rather than
+// risking a residual wall of text becoming the page <h1>.
+function cleanArtworkTitle(raw) {
+  const cleaned = cleanArtworkText(raw);
+  if (!cleaned) return null;
+  if (cleaned.length > 150 || /\bQS:|wikidata/i.test(cleaned)) return null;
+  return cleaned;
+}
+
+// Defensive re-clean of an already-normalized artwork record. Fresh fetches
+// from the museum APIs are already clean via the normalizers above; this
+// exists for records that were saved to MongoDB (via the admin panel's
+// "featured" picker) before this cleanup existed, or from any other path
+// that hands us a full artwork object without re-normalizing it. Never
+// invents values — a field that cleans to nothing is simply dropped (null).
+function sanitizeArtworkRecord(a) {
+  if (!a || typeof a !== "object") return a;
+  return {
+    ...a,
+    title: cleanArtworkTitle(a.title) || cleanArtworkText(a.title) || "Untitled",
+    artist: cleanArtworkText(a.artist) || "Unknown Artist",
+    year: cleanArtworkText(a.year),
+    medium: cleanArtworkText(a.medium),
+    dimensions: cleanArtworkText(a.dimensions),
+    culture: cleanArtworkText(a.culture),
+    period: cleanArtworkText(a.period),
+    classification: cleanArtworkText(a.classification),
+    department: cleanArtworkText(a.department),
+    creditLine: cleanArtworkText(a.creditLine),
+    description: cleanArtworkText(a.description),
+  };
+}
+
 // ─── Normalizers ────────────────────────────────────────────────────────────
 
 function normalizeMet(obj) {
   return {
     id: `met:${obj.objectID}`,
     source: "met",
+    institution: INSTITUTION_NAMES.met,
     title: obj.title || "Untitled",
     artist: obj.artistDisplayName || "Unknown Artist",
     year: obj.objectDate || null,
     medium: obj.medium || null,
     dimensions: obj.dimensions || null,
+    culture: obj.culture || null,
+    period: obj.period || null,
+    classification: obj.classification || null,
     imageUrl: obj.primaryImage || null,
     thumbnailUrl: obj.primaryImageSmall || null,
     description: obj.creditLine || null,
@@ -53,11 +172,15 @@ function normalizeChicago(obj) {
   return {
     id: `chicago:${obj.id}`,
     source: "chicago",
+    institution: INSTITUTION_NAMES.chicago,
     title: obj.title || "Untitled",
     artist: obj.artist_display || obj.artist_title || "Unknown Artist",
     year: obj.date_display || null,
     medium: obj.medium_display || null,
     dimensions: obj.dimensions || null,
+    culture: obj.place_of_origin || null,
+    period: null,
+    classification: obj.classification_title || null,
     imageUrl,
     thumbnailUrl,
     description: obj.description || obj.short_description || null,
@@ -73,11 +196,15 @@ function normalizeCleveland(obj) {
   return {
     id: `cleveland:${obj.id}`,
     source: "cleveland",
+    institution: INSTITUTION_NAMES.cleveland,
     title: obj.title || "Untitled",
     artist: obj.creators?.map((c) => c.description).join(", ") || "Unknown Artist",
     year: obj.creation_date || null,
     medium: obj.technique || null,
     dimensions: obj.measurements || null,
+    culture: Array.isArray(obj.culture) ? obj.culture.filter(Boolean).join(", ") || null : obj.culture || null,
+    period: obj.period || null,
+    classification: obj.type || null,
     imageUrl: image,
     thumbnailUrl: thumb,
     description: obj.wall_description || obj.did_you_know || null,
@@ -92,22 +219,24 @@ function normalizeWikimedia(page) {
   if (!info?.url) return null;
   const meta = info.extmetadata || {};
 
-  const stripHtml = (s) => (s || "").replace(/<[^>]*>/g, "").trim();
-
   return {
     id: `wikimedia:${page.pageid}`,
     source: "wikimedia",
-    title: stripHtml(meta.ObjectName?.value) ||
+    institution: INSTITUTION_NAMES.wikimedia,
+    title: cleanArtworkTitle(meta.ObjectName?.value) ||
       (page.title || "").replace(/^File:/, "").replace(/\.[^/.]+$/, ""),
-    artist: stripHtml(meta.Artist?.value) || "Unknown Artist",
-    year: stripHtml(meta.DateTimeOriginal?.value || meta.Date?.value) || null,
-    medium: stripHtml(meta.Medium?.value) || null,
+    artist: cleanArtworkText(meta.Artist?.value) || "Unknown Artist",
+    year: cleanArtworkText(meta.DateTimeOriginal?.value || meta.Date?.value) || null,
+    medium: cleanArtworkText(meta.Medium?.value) || null,
     dimensions: null,
+    culture: null,
+    period: null,
+    classification: null,
     imageUrl: info.url,
     thumbnailUrl: info.thumburl || info.url,
-    description: stripHtml(meta.ImageDescription?.value) || null,
+    description: cleanArtworkText(meta.ImageDescription?.value) || null,
     department: null,
-    creditLine: stripHtml(meta.Credit?.value) || null,
+    creditLine: cleanArtworkText(meta.Credit?.value) || null,
     sourceUrl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(page.title || "")}`,
   };
 }
@@ -116,15 +245,19 @@ function normalizeRijksmuseum(obj) {
   return {
     id: `rijksmuseum:${obj.objectNumber}`,
     source: "rijksmuseum",
+    institution: INSTITUTION_NAMES.rijksmuseum,
     title: obj.title || "Untitled",
     artist: obj.principalOrFirstMaker || "Unknown Artist",
     year: obj.dating?.presentingDate || null,
     medium: obj.materials?.join(", ") || null,
     dimensions: null,
+    culture: obj.productionPlaces?.[0] || null,
+    period: null,
+    classification: obj.objectTypes?.[0] || null,
     imageUrl: obj.webImage?.url || null,
     thumbnailUrl: obj.webImage?.url || null,
     description: obj.plaqueDescriptionEnglish || null,
-    department: obj.productionPlaces?.[0] || null,
+    department: null,
     creditLine: null,
     sourceUrl: obj.links?.web || null,
   };
@@ -178,7 +311,7 @@ async function getMetArtwork(id) {
 
 const CHICAGO_BASE = "https://api.artic.edu/api/v1";
 const CHICAGO_FIELDS =
-  "id,title,artist_display,artist_title,date_display,medium_display,dimensions,image_id,description,short_description,department_title,credit_line";
+  "id,title,artist_display,artist_title,date_display,medium_display,dimensions,image_id,description,short_description,department_title,credit_line,classification_title,place_of_origin";
 
 async function searchChicago(query, limit = 20) {
   const cacheKey = `chicago:search:${query}:${limit}`;
@@ -428,6 +561,60 @@ export async function getPublicArtwork(source, id) {
   return null;
 }
 
+/**
+ * Lightweight "More Public Domain Art" recommendations for the detail page.
+ * Reuses the existing per-source search (querying by artist name) rather than
+ * adding a new external integration or a heavy similarity system, then ranks
+ * candidates by shared metadata. Falls back to the curated featured pool
+ * (already cached) when the artist search doesn't return enough results.
+ */
+export async function getRelatedArtworks(source, id, limit = 7) {
+  const base = await getPublicArtwork(source, id);
+  if (!base) return [];
+
+  const candidates = new Map(); // id -> artwork, de-duplicated, excludes base
+
+  const addAll = (list) => {
+    for (const a of list || []) {
+      if (!a || !a.id || a.id === base.id) continue;
+      if (!candidates.has(a.id)) candidates.set(a.id, a);
+    }
+  };
+
+  if (base.artist && base.artist !== "Unknown Artist") {
+    try {
+      addAll(await searchPublicArt(base.artist, source, limit * 2));
+    } catch {
+      // external API hiccup — fall through to the featured pool below
+    }
+  }
+
+  if (candidates.size < limit) {
+    try {
+      addAll(await getFeaturedArtworks());
+    } catch {
+      // ignore — worst case the sidebar shows fewer items
+    }
+  }
+
+  const score = (a) => {
+    let s = 0;
+    if (a.artist && base.artist && a.artist === base.artist) s += 40;
+    if (a.institution && base.institution && a.institution === base.institution) s += 20;
+    if (a.department && base.department && a.department === base.department) s += 15;
+    if (a.culture && base.culture && a.culture === base.culture) s += 15;
+    if (a.period && base.period && a.period === base.period) s += 15;
+    if (a.classification && base.classification && a.classification === base.classification) s += 15;
+    if (a.medium && base.medium && a.medium === base.medium) s += 10;
+    return s;
+  };
+
+  return [...candidates.values()]
+    .filter((a) => a.imageUrl || a.thumbnailUrl)
+    .sort((a, b) => score(b) - score(a))
+    .slice(0, limit);
+}
+
 const FALLBACK_FEATURED = [
   { source: "met", id: 436535 },
   { source: "met", id: 459123 },
@@ -440,6 +627,11 @@ const FALLBACK_FEATURED = [
 /**
  * Featured artworks — reads full artwork objects directly from DB.
  * Falls back to fetching hardcoded defaults from external APIs only if DB is empty.
+ *
+ * DB-stored records were saved verbatim by the admin panel and may predate
+ * the field-cleaning fix in the normalizers above, so every record — DB or
+ * fallback — is passed through sanitizeArtworkRecord before being cached and
+ * returned. The stored Mongo document itself is never modified.
  */
 export async function getFeaturedArtworks() {
   const cacheKey = "featured";
@@ -451,8 +643,9 @@ export async function getFeaturedArtworks() {
     const doc = await FeaturedPublicArt.findOne({ key: "default" }).lean();
 
     if (doc && doc.artworks.length > 0) {
-      cacheSet(cacheKey, doc.artworks);
-      return doc.artworks;
+      const cleaned = doc.artworks.map(sanitizeArtworkRecord);
+      cacheSet(cacheKey, cleaned);
+      return cleaned;
     }
   } catch {
     // fall through to hardcoded defaults
@@ -465,7 +658,7 @@ export async function getFeaturedArtworks() {
 
   const artworks = results
     .filter((r) => r.status === "fulfilled" && r.value)
-    .map((r) => r.value);
+    .map((r) => sanitizeArtworkRecord(r.value));
 
   cacheSet(cacheKey, artworks);
   return artworks;
@@ -477,9 +670,10 @@ export async function getFeaturedArtworks() {
  */
 export async function saveFeaturedArtworks(artworks, updatedBy) {
   const FeaturedPublicArt = (await import("../models/featuredPublicArt.js")).default;
+  const cleaned = (artworks || []).map(sanitizeArtworkRecord);
   await FeaturedPublicArt.findOneAndUpdate(
     { key: "default" },
-    { artworks, updatedBy },
+    { artworks: cleaned, updatedBy },
     { upsert: true, new: true }
   );
   cache.delete("featured");
