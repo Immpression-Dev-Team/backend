@@ -1,5 +1,6 @@
 import express from "express";
 import Image from "../../models/images.js";
+import BlogPost from "../../models/blogPost.js";
 
 const router = express.Router();
 
@@ -13,6 +14,9 @@ const STATIC_PAGES = [
   { loc: `${BASE_URL}/marketplace`, changefreq: "daily", priority: "0.9" },
   { loc: `${BASE_URL}/about`, changefreq: "monthly", priority: "0.7" },
   { loc: `${BASE_URL}/contact`, changefreq: "monthly", priority: "0.6" },
+  { loc: `${BASE_URL}/explore`, changefreq: "weekly", priority: "0.7" },
+  { loc: `${BASE_URL}/press`, changefreq: "monthly", priority: "0.5" },
+  { loc: `${BASE_URL}/blog`, changefreq: "weekly", priority: "0.6" },
 ];
 
 router.get("/sitemap.xml", async (req, res) => {
@@ -36,7 +40,21 @@ router.get("/sitemap.xml", async (req, res) => {
       };
     });
 
-    const allUrls = [...STATIC_PAGES, ...artworkUrls];
+    const posts = await BlogPost.find(
+      { published: true },
+      { slug: 1, updatedAt: 1 }
+    ).lean();
+
+    const blogUrls = posts.map((post) => ({
+      loc: `${BASE_URL}/blog/${post.slug}`,
+      lastmod: post.updatedAt
+        ? new Date(post.updatedAt).toISOString().split("T")[0]
+        : undefined,
+      changefreq: "monthly",
+      priority: "0.6",
+    }));
+
+    const allUrls = [...STATIC_PAGES, ...artworkUrls, ...blogUrls];
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
