@@ -1,6 +1,13 @@
 // Import the Express framework
 import express from "express";
 
+// Path helpers for serving static assets (favicon)
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // Import the Mongoose library for MongoDB
 import mongoose from "mongoose";
 
@@ -93,6 +100,12 @@ const corsOrigins = [
 
 // Create an Express application
 const app = express();
+
+// Favicon (also used as the Vercel project icon)
+app.get("/favicon.ico", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "favicon.png"));
+});
+app.use(express.static(path.join(__dirname, "public")));
 
 // Simple request logger (in addition to morgan) for quick visibility
 app.use((req, _res, next) => {
