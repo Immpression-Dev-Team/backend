@@ -248,8 +248,37 @@ mongoose
   });
 
 // Default server route
-app.get("/", (_req, res) => {
-  res.send({ status: "Server is running" });
+const SERVER_BANNER = `
+      _________________
+     |  _____________  |
+     | |             | |
+     | |    /\\        | |
+     | |   /  \\       | |
+     | |  / /\\ \\_     | |
+     | | /_/  \\__\\    | |
+     | |_____________| |
+     |_________________|
+
+      I M M P R E S S I O N
+
+`;
+
+app.get("/", (req, res) => {
+  // JSON-only clients (health checks, monitoring) still get the plain status shape
+  if (req.accepts(["html", "json"]) === "json") {
+    return res.send({ status: "Server is running" });
+  }
+
+  const uptimeSeconds = Math.floor(process.uptime());
+  const uptime = `${Math.floor(uptimeSeconds / 3600)}h ${Math.floor(
+    (uptimeSeconds % 3600) / 60
+  )}m ${uptimeSeconds % 60}s`;
+
+  res
+    .type("text/plain")
+    .send(
+      `${SERVER_BANNER}      status:  ONLINE\n      uptime:  ${uptime}\n      time:    ${new Date().toISOString()}\n`
+    );
 });
 
 // Start the server
