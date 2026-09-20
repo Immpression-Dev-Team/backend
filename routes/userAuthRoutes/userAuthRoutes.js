@@ -1159,6 +1159,7 @@ router.get('/profile/:id', async (req, res) => {
       'bio',
       'artistType',
       'profilePictureLink',
+      'createdAt',
     ]);
 
     if (!user) {

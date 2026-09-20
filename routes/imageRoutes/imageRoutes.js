@@ -832,7 +832,7 @@ router.get('/marketplace/:id', async (req, res) => {
     }
 
     const image = await ImageModel.findOne({ _id: id, stage: 'approved' })
-      .select('_id userId artistName name description price imageLink category createdAt dimensions weight isSigned isFramed views soldStatus');
+      .select('_id userId artistName name description price imageLink category createdAt dimensions weight isSigned isFramed views likes soldStatus');
 
     if (!image) {
       return res.status(404).json({ success: false, error: 'Artwork not found' });
