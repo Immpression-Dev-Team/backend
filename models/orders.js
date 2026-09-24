@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { FULFILLMENT_TYPE } from "./images.js";
 const { Schema } = mongoose;
 
 /** ===================== Enums ===================== */
@@ -112,6 +113,22 @@ const OrderSchema = new Schema(
     // ✅ made required to match your /order validation
     artistName: { type: String, required: true },
 
+    // Snapshot of the artwork's fulfillment type at order-creation time,
+    // mirroring the artName/artistName snapshot pattern.
+    fulfillmentType: {
+      type: String,
+      enum: Object.values(FULFILLMENT_TYPE),
+      default: FULFILLMENT_TYPE.SELLER,
+    },
+    printFulfillmentStatus: {
+      type: String,
+      enum: ["not_applicable", "pending", "submitted", "failed"],
+      default: "not_applicable",
+    },
+    // Prodigi's raw order id/status once submitted (see services/printFulfillmentService.js)
+    prodigiOrderId: { type: String },
+    prodigiOrderStatus: { type: String },
+
     artistUserId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     artistStripeId: { type: String, required: true },
 
@@ -124,6 +141,9 @@ const OrderSchema = new Schema(
 
     /** >>> New monetary fields (all cents) <<< */
     baseAmount: { ...Money },     // mirrors `price`
+    // For Print on Demand orders, this holds Prodigi's print+ship quote
+    // (see GET /order/:id/shipping-quote) rather than a seller-shipped
+    // parcel cost — see sellerDueCents below for how payout differs.
     shippingAmount: { ...Money },
     taxAmount: { ...Money },
     totalAmount: { ...Money },    // base + shipping + tax
@@ -183,12 +203,17 @@ OrderSchema.pre("save", function (next) {
 
   this.totalAmount = b + s + t;
 
-  // Auto-calc payout fields if not set
+  // Auto-calc payout fields if not set.
+  // For Print on Demand orders, `shippingAmount` holds Prodigi's print+ship
+  // quote, not a seller-shipped parcel cost — the artist is only paid their
+  // base price, minus the platform hold.
   const hold = Math.round(b * 0.03);
   if (!this.platformHoldOnBase || this.platformHoldOnBase !== hold) {
     this.platformHoldOnBase = hold;
   }
-  const due = s + (b - hold);
+  const due = this.fulfillmentType === FULFILLMENT_TYPE.PRINT_ON_DEMAND
+    ? (b - hold)
+    : s + (b - hold);
   if (!this.sellerDueCents || this.sellerDueCents !== due) {
     this.sellerDueCents = due;
   }

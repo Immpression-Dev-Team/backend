@@ -19,6 +19,10 @@
         {
             "path": "/orders/shipments/poll-due?secret=superlongrandomstring",
             "schedule": "0 9 * * *"
+        },
+        {
+            "path": "/orders/print-on-demand/poll-due?secret=superlongrandomstring",
+            "schedule": "0 9 * * *"
         }
     ]
 }

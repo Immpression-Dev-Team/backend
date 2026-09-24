@@ -34,6 +34,29 @@ const STAGE_ENUM = {
   message: "Stage should be one of the following: [review, approved, rejected]",
 };
 
+// Define enum for fulfillment type
+export const FULFILLMENT_TYPE = {
+  SELLER: "seller",
+  PRINT_ON_DEMAND: "print_on_demand",
+};
+
+const FULFILLMENT_TYPE_ENUM = {
+  values: Object.values(FULFILLMENT_TYPE),
+  message: "fulfillmentType should be one of the following: [seller, print_on_demand]",
+};
+
+// Define enum for print-on-demand setup status
+export const PRINT_ON_DEMAND_STATUS = {
+  PENDING_SETUP: "pending_setup",
+  AVAILABLE: "available",
+  UNAVAILABLE: "unavailable",
+};
+
+const POD_STATUS_ENUM = {
+  values: Object.values(PRINT_ON_DEMAND_STATUS),
+  message: "printOnDemandStatus should be one of the following: [pending_setup, available, unavailable]",
+};
+
 // Define the ImageSchema using the Schema constructor
 const ImageSchema = new Schema(
   {
@@ -86,17 +109,28 @@ const ImageSchema = new Schema(
     ],
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
 
-    // Expanded dimensions with length
+    // Expanded dimensions with length.
+    // Only required for seller-fulfilled artwork — Print on Demand artwork
+    // has no physical piece for the artist to measure.
     dimensions: {
-      height: { type: Number, required: true }, // in inches or cm
-      width: { type: Number, required: true },
-      length: { type: Number, required: true }, // ✅ new length field
+      height: {
+        type: Number, // in inches or cm
+        required: function () { return this.fulfillmentType !== FULFILLMENT_TYPE.PRINT_ON_DEMAND; },
+      },
+      width: {
+        type: Number,
+        required: function () { return this.fulfillmentType !== FULFILLMENT_TYPE.PRINT_ON_DEMAND; },
+      },
+      length: {
+        type: Number,
+        required: function () { return this.fulfillmentType !== FULFILLMENT_TYPE.PRINT_ON_DEMAND; },
+      },
     },
 
-    // New top-level field for weight
+    // New top-level field for weight. Same seller-only requirement as dimensions.
     weight: {
       type: Number, // in lbs or kg
-      required: true,
+      required: function () { return this.fulfillmentType !== FULFILLMENT_TYPE.PRINT_ON_DEMAND; },
     },
 
     isSigned: {
@@ -126,7 +160,29 @@ const ImageSchema = new Schema(
       type: String,
       enum: ["unsold", "sold"],
       default: "unsold",
-    },    
+    },
+
+    // How this artwork gets to the buyer: seller ships it themselves, or
+    // Immpression prints and ships it (Print on Demand).
+    fulfillmentType: {
+      type: String,
+      enum: FULFILLMENT_TYPE_ENUM,
+      default: FULFILLMENT_TYPE.SELLER,
+    },
+    printOnDemandStatus: {
+      type: String,
+      enum: POD_STATUS_ENUM,
+      default: null,
+    },
+    // Best-effort print-quality metadata, only meaningful when
+    // fulfillmentType === "print_on_demand". Not validated/enforced yet.
+    printSourceMeta: {
+      width: { type: Number },
+      height: { type: Number },
+      format: { type: String },
+      imageUrl: { type: String },
+      originalImageUrl: { type: String },
+    },
   },
   { timestamps: true }
 );

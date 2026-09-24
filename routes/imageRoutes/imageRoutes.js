@@ -37,6 +37,9 @@ import { IMAGE_CATEGORY } from '../../models/images.js';
 // Import the IMAGE_STAGE enum
 import { IMAGE_STAGE } from "../../models/images.js";
 
+// Import the fulfillment enums
+import { FULFILLMENT_TYPE, PRINT_ON_DEMAND_STATUS } from "../../models/images.js";
+
 // POST route for uploading an image
 router.post('/image', isUserAuthorized, async (request, response) => {
   try {
@@ -52,6 +55,8 @@ router.post('/image', isUserAuthorized, async (request, response) => {
       isSigned,
       isFramed,
       weight,       // <--- NEW
+      fulfillmentType,
+      printSourceMeta,
     } = request.body;
 
     // Basic required fields
@@ -62,30 +67,46 @@ router.post('/image', isUserAuthorized, async (request, response) => {
       });
     }
 
-    // Dimensions: height, width, length are all required numbers > 0
-    const h = Number(dimensions?.height);
-    const w = Number(dimensions?.width);
-    const l = Number(dimensions?.length); // <--- NEW
-    if (!dimensions || [h, w, l].some(v => Number.isNaN(v))) {
+    // Fulfillment type: default to seller, but validate if provided (never trust client-only checks)
+    const fulfillmentTypeVal = fulfillmentType || FULFILLMENT_TYPE.SELLER;
+    if (!Object.values(FULFILLMENT_TYPE).includes(fulfillmentTypeVal)) {
       return response.status(400).json({
         success: false,
-        error: 'Dimensions must include valid height, width, and length.',
-      });
-    }
-    if (h <= 0 || w <= 0 || l <= 0) {
-      return response.status(400).json({
-        success: false,
-        error: 'Dimensions must be positive numbers.',
+        error: `fulfillmentType (${fulfillmentTypeVal}) is not valid`,
       });
     }
 
-    // Weight required number > 0
-    const weightNum = Number(weight);
-    if (Number.isNaN(weightNum) || weightNum <= 0) {
-      return response.status(400).json({
-        success: false,
-        error: 'Weight is required and must be a positive number.',
-      });
+    // Dimensions & weight only apply to seller-fulfilled artwork — Print on
+    // Demand artwork has no physical piece for the artist to measure/weigh.
+    const isPrintOnDemand = fulfillmentTypeVal === FULFILLMENT_TYPE.PRINT_ON_DEMAND;
+    let h, w, l, weightNum;
+
+    if (!isPrintOnDemand) {
+      // Dimensions: height, width, length are all required numbers > 0
+      h = Number(dimensions?.height);
+      w = Number(dimensions?.width);
+      l = Number(dimensions?.length); // <--- NEW
+      if (!dimensions || [h, w, l].some(v => Number.isNaN(v))) {
+        return response.status(400).json({
+          success: false,
+          error: 'Dimensions must include valid height, width, and length.',
+        });
+      }
+      if (h <= 0 || w <= 0 || l <= 0) {
+        return response.status(400).json({
+          success: false,
+          error: 'Dimensions must be positive numbers.',
+        });
+      }
+
+      // Weight required number > 0
+      weightNum = Number(weight);
+      if (Number.isNaN(weightNum) || weightNum <= 0) {
+        return response.status(400).json({
+          success: false,
+          error: 'Weight is required and must be a positive number.',
+        });
+      }
     }
 
     // Price validation
@@ -118,14 +139,25 @@ router.post('/image', isUserAuthorized, async (request, response) => {
       price: price_val,
       description,
       category,
-      dimensions: {
-        height: h,
-        width: w,
-        length: l,         // <--- NEW
-      },
-      weight: weightNum,    // <--- NEW
-      isSigned: Boolean(isSigned),
-      isFramed: Boolean(isFramed),
+      ...(!isPrintOnDemand && {
+        dimensions: {
+          height: h,
+          width: w,
+          length: l,         // <--- NEW
+        },
+        weight: weightNum,    // <--- NEW
+        isSigned: Boolean(isSigned),
+        isFramed: Boolean(isFramed),
+      }),
+      fulfillmentType: fulfillmentTypeVal,
+      printOnDemandStatus:
+        fulfillmentTypeVal === FULFILLMENT_TYPE.PRINT_ON_DEMAND
+          ? PRINT_ON_DEMAND_STATUS.PENDING_SETUP
+          : null,
+      printSourceMeta:
+        fulfillmentTypeVal === FULFILLMENT_TYPE.PRINT_ON_DEMAND
+          ? printSourceMeta
+          : undefined,
     });
 
     // Notify admins of new pending artwork (fire-and-forget)
@@ -184,7 +216,7 @@ router.get('/all_images', isUserOptionallyAuthorized, async (request, response) 
     const images = await ImageModel.find(query)
       .limit(limit)
       .skip(skip)
-      .select('_id userId artistName name description price imageLink views category createdAt stage dimensions weight isSigned isFramed soldStatus');
+      .select('_id userId artistName name description price imageLink views category createdAt stage dimensions weight isSigned isFramed soldStatus fulfillmentType printOnDemandStatus');
 
     if (images.length === 0 && page > 1) {
       return response.status(200).json({ success: true, images: [] });
@@ -303,6 +335,8 @@ router.get('/image/:id', isUserAuthorized, async (request, response) => {
       weight: image.weight,
       isSigned: image.isSigned,
       isFramed: image.isFramed,
+      fulfillmentType: image.fulfillmentType,
+      printOnDemandStatus: image.printOnDemandStatus,
     };
 
     response.status(200).json(responseData);
@@ -349,6 +383,15 @@ router.patch(
       if (request.body.description)
         updateImage.description = request.body.description;
       if (request.body.category) updateImage.category = request.body.category;
+      if (request.body.fulfillmentType) {
+        if (!Object.values(FULFILLMENT_TYPE).includes(request.body.fulfillmentType)) {
+          return response.status(400).json({
+            success: false,
+            error: `fulfillmentType (${request.body.fulfillmentType}) is not valid`,
+          });
+        }
+        updateImage.fulfillmentType = request.body.fulfillmentType;
+      }
       // Increment the version key
       updateImage.$inc = { __v: 1 };
 
@@ -452,7 +495,7 @@ router.get('/images', isUserAuthorized, async (req, res) => {
     }
 
     const images = await ImageModel.find(query)
-      .select('_id userId name imageLink stage soldStatus views likes price category createdAt dimensions weight isSigned isFramed');
+      .select('_id userId name imageLink stage soldStatus views likes price category createdAt dimensions weight isSigned isFramed fulfillmentType printOnDemandStatus');
 
     const withFlags = images.map((img) => {
       const o = img.toObject();
@@ -797,7 +840,7 @@ router.get('/marketplace', async (req, res) => {
         .sort(sortOrder)
         .limit(Number(limit))
         .skip(skip)
-        .select('_id userId artistName name description price imageLink category createdAt dimensions weight isSigned isFramed views soldStatus'),
+        .select('_id userId artistName name description price imageLink category createdAt dimensions weight isSigned isFramed views soldStatus fulfillmentType printOnDemandStatus'),
       ImageModel.countDocuments(query),
       ImageModel.countDocuments({ ...query, soldStatus: 'sold' }),
     ]);
@@ -832,7 +875,7 @@ router.get('/marketplace/:id', async (req, res) => {
     }
 
     const image = await ImageModel.findOne({ _id: id, stage: 'approved' })
-      .select('_id userId artistName name description price imageLink category createdAt dimensions weight isSigned isFramed views likes soldStatus');
+      .select('_id userId artistName name description price imageLink category createdAt dimensions weight isSigned isFramed views likes soldStatus fulfillmentType printOnDemandStatus');
 
     if (!image) {
       return res.status(404).json({ success: false, error: 'Artwork not found' });
@@ -866,7 +909,7 @@ router.get('/profile/:userId/images', async (req, res) => {
       stage: { $in: ['approved', 'sold'] },
     })
       .sort({ createdAt: -1 })
-      .select('_id userId artistName name imageLink originalImageLink price category stage soldStatus views likes createdAt dimensions weight isSigned isFramed');
+      .select('_id userId artistName name imageLink originalImageLink price category stage soldStatus views likes createdAt dimensions weight isSigned isFramed fulfillmentType printOnDemandStatus');
 
     const mapped = images.map((img) => ({
       ...img.toObject(),

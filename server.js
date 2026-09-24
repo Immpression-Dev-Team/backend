@@ -284,4 +284,8 @@ app.get("/", (req, res) => {
 // Start the server
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running at http://localhost:${PORT}`);
+
+  const stripeMode = (process.env.STRIPE_SECRET_KEY || "").startsWith("sk_live_") ? "LIVE" : "TEST";
+  const prodigiMode = (process.env.PRODIGI_API_BASE_URL || "").includes("sandbox") ? "SANDBOX" : "LIVE";
+  console.log(`\x1b[33m[payments] Stripe: ${stripeMode}  |  Prodigi: ${prodigiMode}\x1b[0m`);
 });

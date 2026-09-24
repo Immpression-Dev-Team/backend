@@ -5,6 +5,11 @@ import UserModel from "../../models/users.js";
 import { isUserAuthorized, isAdminAuthorized } from "../../utils/authUtils.js";
 import axios from 'axios';
 import Notification, { NOTIFICATION_TYPE } from "../../models/notifications.js";
+import { FULFILLMENT_TYPE } from "../../models/images.js";
+import { handlePrintOnDemandOrder, getProdigiPrintCostBreakdown, getProdigiOrderStatus, applyProdigiOrderSnapshot } from "../../services/printFulfillmentService.js";
+import { payoutSellerForOrder, PayoutError, triggerAutoPayout } from "../../services/payoutService.js";
+import { sendBuyerPaidEmail, sendSellerPaidEmail } from "../../services/orderEmails.js";
+import { normAddr } from "../../utils/address.js";
 
 import Stripe from "stripe";
 
@@ -429,51 +434,8 @@ async function trackWithFedex(trackingNumber) {
 const cents = (n) => Math.round(Number(n || 0));
 
 // ===== Address normalization (ADD) =====
-const US_STATE_ABBR = {
-  ALABAMA: "AL", ALASKA: "AK", ARIZONA: "AZ", ARKANSAS: "AR", CALIFORNIA: "CA",
-  COLORADO: "CO", CONNECTICUT: "CT", DELAWARE: "DE", FLORIDA: "FL", GEORGIA: "GA",
-  HAWAII: "HI", IDAHO: "ID", ILLINOIS: "IL", INDIANA: "IN", IOWA: "IA", KANSAS: "KS",
-  KENTUCKY: "KY", LOUISIANA: "LA", MAINE: "ME", MARYLAND: "MD", MASSACHUSETTS: "MA",
-  MICHIGAN: "MI", MINNESOTA: "MN", MISSISSIPPI: "MS", MISSOURI: "MO", MONTANA: "MT",
-  NEBRASKA: "NE", NEVADA: "NV", "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ",
-  "NEW MEXICO": "NM", "NEW YORK": "NY", "NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND",
-  OHIO: "OH", OKLAHOMA: "OK", OREGON: "OR", PENNSYLVANIA: "PA", "RHODE ISLAND": "RI",
-  "SOUTH CAROLINA": "SC", "SOUTH DAKOTA": "SD", TENNESSEE: "TN", TEXAS: "TX",
-  UTAH: "UT", VERMONT: "VT", VIRGINIA: "VA", WASHINGTON: "WA", "WEST VIRGINIA": "WV",
-  WISCONSIN: "WI", WYOMING: "WY", "DISTRICT OF COLUMBIA": "DC"
-};
-
-function toIsoCountry(c) {
-  if (!c) return "US";
-  const s = String(c).trim().toUpperCase();
-  if (s === "US" || s === "USA" || s.includes("UNITED STATES")) return "US";
-  return s.length === 2 ? s : "US";
-}
-function toUsState(st) {
-  if (!st) return "";
-  const up = String(st).trim().toUpperCase();
-  if (up.length === 2) return up;
-  return US_STATE_ABBR[up] || up;
-}
-function toUsZip(z) {
-  const m = String(z || "").match(/\d{5}(-?\d{4})?/);
-  return m ? m[0].replace("-", "").slice(0, 9) : "";
-}
-
-// REPLACE your existing normAddr with this:
-function normAddr(a = {}) {
-  const line1 = a.line1 || a.address || "";
-  const city = a.city || "";
-  const stateRaw = a.state || a.stateCode || "";
-  const zipRaw = a.postal_code || a.zipCode || a.zip || "";
-  const countryRaw = a.country || "US";
-
-  const country = toIsoCountry(countryRaw);
-  const state = country === "US" ? toUsState(stateRaw) : stateRaw;
-  const postal_code = country === "US" ? toUsZip(zipRaw) : String(zipRaw || "");
-
-  return { line1, city, state, postal_code, country };
-}
+// Address normalization (normAddr/toIsoCountry/toUsState/toUsZip) now lives in
+// ../../utils/address.js — shared with services/printFulfillmentService.js.
 
 // Reserved reference words that Stripe blocks in Tax Calculations
 const RESERVED_TAX_REFERENCES = new Set(["shipping"]);
@@ -584,6 +546,9 @@ router.post("/order", isUserAuthorized, async (req, res) => {
         .json({ success: false, error: "Artist not connected to Stripe." });
     }
 
+    // .lean() skips schema defaults, so old artwork without this field needs an explicit fallback
+    const fulfillmentType = image.fulfillmentType || FULFILLMENT_TYPE.SELLER;
+
     // ✅ Convert dollars → cents for storage/Stripe
     const baseCents = toCents(priceUsd);
     const shippingCents = 0; // filled later by shipping quote
@@ -609,6 +574,8 @@ router.post("/order", isUserAuthorized, async (req, res) => {
 
       artistUserId,
       artistStripeId: artist.stripeAccountId,
+
+      fulfillmentType,
 
       status: "pending",
     });
@@ -766,8 +733,14 @@ router.post("/create-payment-intent", isUserAuthorized, async (req, res) => {
     const total = base + shipping + tax;
 
     // --- Your policy: hold tax + 3% of base; seller can get shipping + 97% of base ---
+    // For Print on Demand orders, `shipping` here is Prodigi's print+ship
+    // quote (set by GET /order/:id/shipping-quote), not a seller-shipped
+    // parcel — the artist isn't paid for it, only for their base price.
     const platformHoldOnBase = Math.round(base * 0.03); // 3% of base
-    const sellerDueCents = shipping + (base - platformHoldOnBase); // what seller can receive later
+    const sellerDueCents =
+      order.fulfillmentType === FULFILLMENT_TYPE.PRINT_ON_DEMAND
+        ? base - platformHoldOnBase
+        : shipping + (base - platformHoldOnBase); // what seller can receive later
 
     // --- Persist breakdown BEFORE creating the PI (UI consistency) ---
     order.baseAmount = base;
@@ -978,6 +951,15 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
         const total = Math.max(0, Math.round(Number(pi.metadata?.total || base + shipping + tax)));
         const transferGroup = pi.metadata?.transferGroup || `order_${orderId}`;
 
+        // Idempotency: finalize-payment may have already processed this
+        // order (client-driven fallback racing the webhook) — skip
+        // re-processing so we don't double-send notifications/emails.
+        const alreadyPaidOrder = orderId ? await OrderModel.findById(orderId).lean() : null;
+        if (alreadyPaidOrder && (alreadyPaidOrder.status || "").toLowerCase() === "paid") {
+          console.log(`[webhook] Order ${orderId} already paid — skipping re-processing.`);
+          break;
+        }
+
         if (orderId) {
           await OrderModel.findOneAndUpdate(
             { _id: orderId },
@@ -1016,28 +998,37 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
                 imageId: paidOrder.imageId,
                 data: { artName: paidOrder.artName, price: paidOrder.baseAmount, imageLink: paidOrder.imageLink },
               });
+              sendBuyerPaidEmail(paidOrder).catch(() => {});
+              sendSellerPaidEmail(paidOrder).catch(() => {});
 
               await Notification.create({
                 recipientUserId: paidOrder.artistUserId,
                 actorUserId: paidOrder.userId,
                 type: NOTIFICATION_TYPE.ORDER_PAID,
                 title: "Payment received",
-                message: `Payment confirmed for "${paidOrder.artName}".`,
+                message:
+                  paidOrder.fulfillmentType === FULFILLMENT_TYPE.PRINT_ON_DEMAND
+                    ? `"${paidOrder.artName}" sold! Immpression will print and ship it — you'll be paid once it's shipped, no action needed from you.`
+                    : `Payment confirmed for "${paidOrder.artName}".`,
                 orderId: paidOrder._id,
                 imageId: paidOrder.imageId,
                 data: { artName: paidOrder.artName, price: paidOrder.baseAmount, imageLink: paidOrder.imageLink },
               });
 
-              await Notification.create({
-                recipientUserId: paidOrder.artistUserId,
-                actorUserId: paidOrder.userId,
-                type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
-                title: "Action needed: Ship order",
-                message: `"${paidOrder.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
-                orderId: paidOrder._id,
-                imageId: paidOrder.imageId,
-                data: { artName: paidOrder.artName, price: paidOrder.baseAmount, imageLink: paidOrder.imageLink },
-              });
+              if (paidOrder.fulfillmentType === FULFILLMENT_TYPE.PRINT_ON_DEMAND) {
+                await handlePrintOnDemandOrder(paidOrder, { imageId: paidOrder.imageId });
+              } else {
+                await Notification.create({
+                  recipientUserId: paidOrder.artistUserId,
+                  actorUserId: paidOrder.userId,
+                  type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
+                  title: "Action needed: Ship order",
+                  message: `"${paidOrder.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
+                  orderId: paidOrder._id,
+                  imageId: paidOrder.imageId,
+                  data: { artName: paidOrder.artName, price: paidOrder.baseAmount, imageLink: paidOrder.imageLink },
+                });
+              }
             }
           } catch (nErr) {
             console.error("⚠️ post-payment actions error:", nErr);
@@ -1079,6 +1070,36 @@ router.post("/webhook", express.raw({ type: "application/json" }), async (req, r
     return res.json({ received: true });
   } catch (err) {
     console.error("❌ Error processing webhook:", err);
+    return res.status(500).json({ error: "Webhook processing failed" });
+  }
+});
+
+
+
+// Prodigi order status callback (CloudEvent). Only reachable when this
+// backend is publicly deployed (e.g. Vercel) with PRODIGI_CALLBACK_URL set
+// to this route — a local dev server on a LAN IP can't receive it.
+router.post("/prodigi-webhook", async (req, res) => {
+  try {
+    // CloudEvent: `data` is the complete Prodigi order object.
+    const event = req.body || {};
+    const prodigiOrder = event?.data || {};
+    const prodigiOrderId = prodigiOrder.id;
+    const stage = prodigiOrder.status?.stage;
+    const shipment = prodigiOrder.shipments?.[0];
+
+    console.log(`[prodigi-webhook] order ${prodigiOrderId} -> stage ${stage}`);
+    await applyProdigiOrderSnapshot({
+      prodigiOrderId,
+      stage,
+      trackingNumber: shipment?.tracking?.number || null,
+      trackingUrl: shipment?.tracking?.url || null,
+      carrier: shipment?.carrier?.name || null,
+    });
+
+    return res.json({ received: true });
+  } catch (err) {
+    console.error("❌ Error processing Prodigi webhook:", err);
     return res.status(500).json({ error: "Webhook processing failed" });
   }
 });
@@ -1364,6 +1385,9 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
         }
 
         await order.save();
+        if (status === SHIPMENT_STATUS.DELIVERED) {
+          triggerAutoPayout(order._id).catch(() => {});
+        }
 
         // Always tell buyer it's shipped if we just attached tracking
         Notification.create({
@@ -1456,6 +1480,9 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
         }
 
         await order.save();
+        if (status === SHIPMENT_STATUS.DELIVERED) {
+          triggerAutoPayout(order._id).catch(() => {});
+        }
 
         Notification.create({
           recipientUserId: order.userId,
@@ -1580,6 +1607,8 @@ router.patch("/order/:id/tracking", isUserAuthorized, async (req, res) => {
         imageId: order.imageId,
         data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
       }).catch(err => console.error("Notif create error:", err));
+
+      triggerAutoPayout(order._id).catch(() => {});
     }
 
     return res.status(200).json({
@@ -1897,6 +1926,31 @@ router.get("/order/:id/shipping-quote", isUserAuthorized, async (req, res) => {
     const isBuyer = String(order.userId) === String(req.user._id);
     const isSeller = String(order.artistUserId) === String(req.user._id);
     if (!isBuyer && !isSeller) return res.status(403).json({ success: false, error: "Not allowed" });
+
+    // Print on Demand: there's no seller parcel to rate with UPS — the
+    // artist isn't shipping anything. Quote Prodigi's print+ship cost
+    // instead, in the same response shape the client already expects.
+    if (order.fulfillmentType === FULFILLMENT_TYPE.PRINT_ON_DEMAND) {
+      const destCountry = normAddr(order.deliveryDetails || {}).country;
+      try {
+        const { printCents, shippingCents, totalCents } = await getProdigiPrintCostBreakdown({ countryCode: destCountry });
+        const pick = {
+          carrier: "Prodigi",
+          serviceCode: "print_on_demand",
+          serviceName: "Print & Shipping",
+          amount: totalCents / 100,
+          currency: "USD",
+          // Split so the client can show separate line items instead of one
+          // lump sum — printCost is what Prodigi charges to produce the
+          // piece, shippingCost is what it costs to ship it.
+          breakdown: { printCost: printCents / 100, shippingCost: shippingCents / 100 },
+        };
+        return res.json({ success: true, rates: [pick], picks: { cheapest: pick, fastest: pick } });
+      } catch (err) {
+        console.error("Prodigi print-cost quote error:", err);
+        return res.status(502).json({ success: false, error: "Unable to price Print on Demand fulfillment." });
+      }
+    }
 
     // Resolve ship-from ZIP from seller profile
     const artist = await UserModel.findById(order.artistUserId).lean();
@@ -2354,6 +2408,7 @@ async function pollDueHandler(req, res) {
               orderId: order._id, imageId: order.imageId,
               data: { artName: order.artName, price: order.price, imageLink: order.imageLink },
             }).catch(()=>{});
+            triggerAutoPayout(order._id).catch(() => {});
           }
         }
 
@@ -2374,6 +2429,61 @@ async function pollDueHandler(req, res) {
     return res.json({ ok: true, processed: due.length, results });
   } catch (e) {
     console.error("poll-due error", e);
+    return res.status(500).json({ ok: false, error: "poll failed" });
+  }
+}
+
+// Print on Demand doesn't have a live webhook reachable from local/private
+// deployments, so we poll Prodigi directly for status, and separately
+// auto-pay sellers 10 days after Prodigi confirms shipment (no delivery
+// confirmation is available from Prodigi, unlike carrier tracking above).
+const PRODIGI_PAYOUT_WAIT_DAYS = 10;
+
+async function prodigiPollDueHandler(req, res) {
+  try {
+    // 1) Refresh status for orders Prodigi hasn't marked "Complete" yet
+    const inFlight = await OrderModel.find({
+      fulfillmentType: FULFILLMENT_TYPE.PRINT_ON_DEMAND,
+      printFulfillmentStatus: "submitted",
+      prodigiOrderId: { $exists: true, $ne: null },
+      prodigiOrderStatus: { $ne: "Complete" },
+    }).limit(50);
+
+    const statusResults = [];
+    for (const order of inFlight) {
+      try {
+        const status = await getProdigiOrderStatus(order.prodigiOrderId);
+        await applyProdigiOrderSnapshot({
+          prodigiOrderId: order.prodigiOrderId,
+          stage: status.stage,
+          trackingNumber: status.trackingNumber,
+          trackingUrl: status.trackingUrl,
+          carrier: status.carrier,
+        });
+        statusResults.push({ orderId: String(order._id), prodigiOrderId: order.prodigiOrderId, stage: status.stage });
+      } catch (e) {
+        statusResults.push({ orderId: String(order._id), error: e.message || String(e) });
+      }
+    }
+
+    // 2) Auto-pay sellers whose Print on Demand order shipped 10+ days ago
+    const cutoff = new Date(Date.now() - PRODIGI_PAYOUT_WAIT_DAYS * 24 * 60 * 60 * 1000);
+    const readyForPayout = await OrderModel.find({
+      fulfillmentType: FULFILLMENT_TYPE.PRINT_ON_DEMAND,
+      prodigiOrderStatus: "Complete",
+      status: "paid",
+      "shipping.shippedAt": { $lte: cutoff },
+    }).limit(50);
+
+    const payoutsTriggered = [];
+    for (const order of readyForPayout) {
+      await triggerAutoPayout(order._id);
+      payoutsTriggered.push(String(order._id));
+    }
+
+    return res.json({ ok: true, polled: inFlight.length, statusResults, payoutsTriggered });
+  } catch (e) {
+    console.error("prodigi-poll-due error", e);
     return res.status(500).json({ ok: false, error: "poll failed" });
   }
 }
@@ -2422,10 +2532,10 @@ router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
       const n = Math.max(0, Math.round(Number(v || def)));
       return Number.isFinite(n) ? n : 0;
     };
-    const baseCents     = toPosInt(pi?.metadata?.base,        order.baseAmount ?? order.price ?? 0);
-    const shippingCents = toPosInt(pi?.metadata?.shipping,    order.shippingAmount ?? 0);
-    const taxCents      = toPosInt(pi?.metadata?.tax,         order.taxAmount ?? 0);
-    const totalCents    = toPosInt(pi?.metadata?.total,       baseCents + shippingCents + taxCents);
+    const baseCents      = toPosInt(pi?.metadata?.base,        order.baseAmount ?? order.price ?? 0);
+    const shippingCents  = toPosInt(pi?.metadata?.shipping,    order.shippingAmount ?? 0);
+    const taxCents       = toPosInt(pi?.metadata?.tax,         order.taxAmount ?? 0);
+    const totalCents     = toPosInt(pi?.metadata?.total,       baseCents + shippingCents + taxCents);
 
     // ✅ Persist order state
     order.status = "paid";
@@ -2451,7 +2561,7 @@ router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
 
     // ✅ Notifications (best-effort)
     const notifData = { artName: order.artName, price: order.baseAmount, imageLink: order.imageLink };
-    await Promise.allSettled([
+    const paidNotifications = [
       Notification.create({
         recipientUserId: order.userId,
         actorUserId: order.artistUserId,
@@ -2465,18 +2575,32 @@ router.post("/finalize-payment", isUserAuthorized, async (req, res) => {
         actorUserId: order.userId,
         type: NOTIFICATION_TYPE.ORDER_PAID,
         title: "Payment received",
-        message: `Payment confirmed for "${order.artName}".`,
+        message:
+          order.fulfillmentType === FULFILLMENT_TYPE.PRINT_ON_DEMAND
+            ? `"${order.artName}" sold! Immpression will print and ship it — you'll be paid once it's shipped, no action needed from you.`
+            : `Payment confirmed for "${order.artName}".`,
         orderId: order._id, imageId: order.imageId, data: notifData,
       }),
-      Notification.create({
-        recipientUserId: order.artistUserId,
-        actorUserId: order.userId,
-        type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
-        title: "Action needed: Ship order",
-        message: `"${order.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
-        orderId: order._id, imageId: order.imageId, data: notifData,
-      }),
-    ]);
+      sendBuyerPaidEmail(order).catch(() => {}),
+      sendSellerPaidEmail(order).catch(() => {}),
+    ];
+
+    if (order.fulfillmentType === FULFILLMENT_TYPE.PRINT_ON_DEMAND) {
+      paidNotifications.push(handlePrintOnDemandOrder(order, { imageId: order.imageId }));
+    } else {
+      paidNotifications.push(
+        Notification.create({
+          recipientUserId: order.artistUserId,
+          actorUserId: order.userId,
+          type: NOTIFICATION_TYPE.ORDER_NEEDS_SHIPPING,
+          title: "Action needed: Ship order",
+          message: `"${order.artName}" is paid and ready to ship. Add tracking info to notify the buyer.`,
+          orderId: order._id, imageId: order.imageId, data: notifData,
+        })
+      );
+    }
+
+    await Promise.allSettled(paidNotifications);
 
     return res.json({ success: true, data: { orderId: String(order._id), status: order.status } });
   } catch (err) {
@@ -2508,7 +2632,13 @@ router.get("/order/:id/payout-preview", isAdminAuthorized, async (req, res) => {
     const net       = posInt(bt.net);  // gross - stripeFee
 
     const platformHoldOnBase = Math.round(base * 0.03); // 3%
-    const sellerTarget = Math.max(0, (net - tax) - platformHoldOnBase);
+    // For Print on Demand, `shipping` is Prodigi's print+ship cost, not a
+    // seller-shipped parcel — it must come out before computing the
+    // artist's share, same as sellerDueCents in models/orders.js.
+    const sellerTarget =
+      order.fulfillmentType === FULFILLMENT_TYPE.PRINT_ON_DEMAND
+        ? Math.max(0, (net - tax - shipping) - platformHoldOnBase)
+        : Math.max(0, (net - tax) - platformHoldOnBase);
     const alreadySent  = posInt(order.sellerTransferredCents || 0);
     const remaining    = Math.max(0, sellerTarget - alreadySent);
 
@@ -2533,82 +2663,23 @@ router.get("/order/:id/payout-preview", isAdminAuthorized, async (req, res) => {
 // body: { amountCents? }  // optional cap; otherwise pays full remaining
 router.post("/order/:id/payout", isAdminAuthorized, async (req, res) => {
   try {
-    const order = await OrderModel.findById(req.params.id);
-    if (!order) return res.status(404).json({ success: false, error: "Order not found" });
-    if ((order.status || "").toLowerCase() !== "paid")
-      return res.status(400).json({ success: false, error: "Order not paid" });
-    if (!order.artistStripeId)
-      return res.status(400).json({ success: false, error: "Seller not connected to Stripe" });
-    if (!order.chargeId)
-      return res.status(400).json({ success: false, error: "Order chargeId missing" });
+    const result = await payoutSellerForOrder(req.params.id, { amountCentsCap: req.body?.amountCents });
 
-    // Read Stripe fee + net from the charge’s balance transaction
-    const charge = await stripe.charges.retrieve(order.chargeId, { expand: ["balance_transaction"] });
-    const bt = charge.balance_transaction;
-    if (!bt) return res.status(409).json({ success: false, error: "Balance transaction not available yet" });
-
-    const base     = posInt(order.baseAmount ?? order.price);
-    const shipping = posInt(order.shippingAmount);
-    const tax      = posInt(order.taxAmount);
-    const stripeFee = posInt(bt.fee);
-    const net       = posInt(bt.net);
-
-    // Policy: hold 100% of tax + 3% of base; pay remainder after Stripe fee
-    const platformHoldOnBase = Math.round(base * 0.03);
-    const sellerTarget = Math.max(0, (net - tax) - platformHoldOnBase);
-
-    // Respect previous partial payouts
-    const alreadySent = posInt(order.sellerTransferredCents || 0);
-    let remaining = Math.max(0, sellerTarget - alreadySent);
-
-    // Optional cap (e.g., to split into chunks)
-    const cap = posInt(req.body?.amountCents);
-    if (cap > 0) remaining = Math.min(remaining, cap);
-
-    if (remaining === 0) {
+    if (result.skipped) {
       return res.status(200).json({
         success: true,
         message: "Nothing to pay (already paid out or not enough net funds).",
-        data: { sellerTarget, alreadySent, remaining: 0 }
+        data: { sellerTarget: result.sellerTarget, alreadySent: result.alreadySent, remaining: 0 }
       });
     }
 
-    // Create transfer linked to the original charge
-    const transferGroup = order.transferGroup || `order_${order._id}`;
-    const idempotencyKey = `transfer_order_${order._id}_${alreadySent + remaining}`;
+    const { transfer, seller } = result;
 
-    const transfer = await stripe.transfers.create({
-      amount: remaining,
-      currency: "usd",
-      destination: order.artistStripeId,
-      transfer_group: transferGroup,
-      source_transaction: order.chargeId, // ensures funds come from this charge when available
-      metadata: {
-        orderId: String(order._id),
-        base: String(base),
-        shipping: String(shipping),
-        tax: String(tax),
-        stripeFee: String(stripeFee),
-        platformHoldOnBase: String(platformHoldOnBase)
-      }
-    }, { idempotencyKey });
-
-    // Bookkeeping
-    order.sellerTransferredCents = (order.sellerTransferredCents || 0) + remaining;
-    await order.save();
-
-    return res.status(200).json({
-      success: true,
-      data: {
-        transfer,
-        seller: {
-          target: sellerTarget,
-          alreadySent: order.sellerTransferredCents,
-          remaining: Math.max(0, sellerTarget - order.sellerTransferredCents)
-        }
-      }
-    });
+    return res.status(200).json({ success: true, data: { transfer, seller } });
   } catch (error) {
+    if (error instanceof PayoutError) {
+      return res.status(400).json({ success: false, error: error.message });
+    }
     console.error("Error creating payout:", error);
     return res.status(500).json({ success: false, error: error.message || "Payout failed" });
   }
@@ -2618,6 +2689,9 @@ router.post("/order/:id/payout", isAdminAuthorized, async (req, res) => {
 // Expose both POST and GET so Vercel Cron (GET) works
 router.post("/orders/shipments/poll-due", pollDueGuard, pollDueHandler);
 router.get("/orders/shipments/poll-due", pollDueGuard, pollDueHandler);
+
+router.post("/orders/print-on-demand/poll-due", pollDueGuard, prodigiPollDueHandler);
+router.get("/orders/print-on-demand/poll-due", pollDueGuard, prodigiPollDueHandler);
 
 
 
