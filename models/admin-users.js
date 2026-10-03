@@ -12,7 +12,7 @@ const AdminUserSchema = new Schema(
       unique: true,
       required: [true, "Email is required"],
       match: [
-        /^\w+(\.\w+)*@\w+([\-]?\w+)*(\.\w{2,3})+$/,
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
         "Invalid email address",
       ],
     },
