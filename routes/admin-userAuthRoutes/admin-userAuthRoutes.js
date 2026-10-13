@@ -597,6 +597,31 @@ router.get("/analytics", isAdminAuthorized, async (req, res) => {
             .limit(5)
             .lean();
 
+        // Monthly sign-ups for the last 12 calendar months (filled with 0
+        // for months with no sign-ups, so the chart has a continuous timeline).
+        const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        const now = new Date();
+        const months = Array.from({ length: 12 }, (_, i) => {
+            const d = new Date(now.getFullYear(), now.getMonth() - (11 - i), 1);
+            return { year: d.getFullYear(), month: d.getMonth() + 1, label: `${MONTH_NAMES[d.getMonth()]} '${String(d.getFullYear()).slice(2)}` };
+        });
+        const rangeStart = new Date(months[0].year, months[0].month - 1, 1);
+
+        const signupsAgg = await UserModel.aggregate([
+            { $match: { createdAt: { $gte: rangeStart } } },
+            {
+                $group: {
+                    _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+                    count: { $sum: 1 },
+                },
+            },
+        ]);
+        const signupsByKey = new Map(signupsAgg.map((r) => [`${r._id.year}-${r._id.month}`, r.count]));
+        const signupsByMonth = months.map((m) => ({
+            month: m.label,
+            signups: signupsByKey.get(`${m.year}-${m.month}`) || 0,
+        }));
+
         // --- Images ---
         const totalImages = await ImageModel.countDocuments();
         const pendingImages = await ImageModel.countDocuments({
@@ -634,6 +659,7 @@ router.get("/analytics", isAdminAuthorized, async (req, res) => {
                     artists,
                     artLovers,
                     recent: recentUsers,
+                    signupsByMonth,
                 },
                 images: {
                     total: totalImages,
