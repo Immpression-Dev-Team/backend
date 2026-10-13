@@ -30,6 +30,21 @@ async function getAccessToken() {
   return token.token;
 }
 
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// monthsAgo=0 -> 1st of this month through today; monthsAgo=1 -> the full
+// previous calendar month (1st through last day), for a this-month vs
+// last-month comparison instead of 30d vs 7d.
+function monthRange(monthsAgo) {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 1);
+  const end = monthsAgo === 0
+    ? now
+    : new Date(now.getFullYear(), now.getMonth() - monthsAgo + 1, 0);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  return { startDate: fmt(start), endDate: fmt(end) };
+}
+
 async function runReport(propertyId, accessToken, body) {
   const url = `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`;
   const res = await fetch(url, {
@@ -56,10 +71,12 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
     }
 
     const token = await getAccessToken();
+    const thisMonth = monthRange(0);
+    const lastMonth = monthRange(1);
 
-    const [summary30, summary7, dailyRes, topPagesRes, sourcesRes] = await Promise.all([
+    const [summaryThisMonth, summaryLastMonth, monthlyRes, topPagesRes, sourcesRes] = await Promise.all([
       runReport(propertyId, token, {
-        dateRanges: [{ startDate: "30daysAgo", endDate: "today" }],
+        dateRanges: [thisMonth],
         metrics: [
           { name: "activeUsers" },
           { name: "sessions" },
@@ -69,7 +86,7 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
         ],
       }),
       runReport(propertyId, token, {
-        dateRanges: [{ startDate: "7daysAgo", endDate: "today" }],
+        dateRanges: [lastMonth],
         metrics: [
           { name: "activeUsers" },
           { name: "sessions" },
@@ -77,20 +94,21 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
         ],
       }),
       runReport(propertyId, token, {
-        dateRanges: [{ startDate: "30daysAgo", endDate: "today" }],
-        dimensions: [{ name: "date" }],
+        // ~12 months back, grouped by calendar month
+        dateRanges: [{ startDate: "365daysAgo", endDate: "today" }],
+        dimensions: [{ name: "yearMonth" }],
         metrics: [{ name: "screenPageViews" }, { name: "activeUsers" }],
-        orderBys: [{ dimension: { dimensionName: "date" } }],
+        orderBys: [{ dimension: { dimensionName: "yearMonth" } }],
       }),
       runReport(propertyId, token, {
-        dateRanges: [{ startDate: "30daysAgo", endDate: "today" }],
+        dateRanges: [thisMonth],
         dimensions: [{ name: "pagePath" }, { name: "pageTitle" }],
         metrics: [{ name: "screenPageViews" }, { name: "activeUsers" }],
         orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }],
         limit: 10,
       }),
       runReport(propertyId, token, {
-        dateRanges: [{ startDate: "30daysAgo", endDate: "today" }],
+        dateRanges: [thisMonth],
         dimensions: [{ name: "sessionDefaultChannelGrouping" }],
         metrics: [{ name: "sessions" }, { name: "activeUsers" }],
         orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
@@ -98,13 +116,15 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
       }),
     ]);
 
-    const mv30 = summary30.rows?.[0]?.metricValues ?? [];
-    const mv7  = summary7.rows?.[0]?.metricValues ?? [];
+    const mvThis = summaryThisMonth.rows?.[0]?.metricValues ?? [];
+    const mvLast = summaryLastMonth.rows?.[0]?.metricValues ?? [];
 
-    const daily = (dailyRes.rows ?? []).map((row) => {
-      const raw = row.dimensionValues[0].value; // "20250401"
+    const monthly = (monthlyRes.rows ?? []).map((row) => {
+      const raw = row.dimensionValues[0].value; // "202501"
+      const mon = parseInt(raw.slice(4, 6), 10);
+      const yr = raw.slice(2, 4);
       return {
-        date: `${raw.slice(4, 6)}/${raw.slice(6, 8)}`,
+        month: `${MONTH_NAMES[mon - 1]} '${yr}`,
         pageViews: parseInt(row.metricValues[0].value || 0),
         users: parseInt(row.metricValues[1].value || 0),
       };
@@ -132,19 +152,19 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
     return res.json({
       success: true,
       data: {
-        last30Days: {
-          users:              parseInt(mv30[0]?.value || 0),
-          sessions:           parseInt(mv30[1]?.value || 0),
-          pageViews:          parseInt(mv30[2]?.value || 0),
-          bounceRate:         parseFloat(parseFloat(mv30[3]?.value || 0).toFixed(1)),
-          avgSessionDuration: Math.round(parseFloat(mv30[4]?.value || 0)),
+        thisMonth: {
+          users:              parseInt(mvThis[0]?.value || 0),
+          sessions:           parseInt(mvThis[1]?.value || 0),
+          pageViews:          parseInt(mvThis[2]?.value || 0),
+          bounceRate:         parseFloat(parseFloat(mvThis[3]?.value || 0).toFixed(1)),
+          avgSessionDuration: Math.round(parseFloat(mvThis[4]?.value || 0)),
         },
-        last7Days: {
-          users:     parseInt(mv7[0]?.value || 0),
-          sessions:  parseInt(mv7[1]?.value || 0),
-          pageViews: parseInt(mv7[2]?.value || 0),
+        lastMonth: {
+          users:     parseInt(mvLast[0]?.value || 0),
+          sessions:  parseInt(mvLast[1]?.value || 0),
+          pageViews: parseInt(mvLast[2]?.value || 0),
         },
-        daily,
+        monthly,
         topPages,
         sources: sourcesWithPct,
       },
