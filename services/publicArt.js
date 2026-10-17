@@ -266,45 +266,74 @@ function normalizeRijksmuseum(obj) {
 // ─── MET API ────────────────────────────────────────────────────────────────
 
 const MET_BASE = "https://collectionapi.metmuseum.org/public/collection/v1";
+// v1/search was retired 2026-10-01; v1.1/search is paginated via offset/limit.
+// Object lookups are still served from v1.
+const MET_SEARCH_URL = "https://collectionapi.metmuseum.org/public/collection/v1.1/search";
+const MET_BATCH_SIZE = 8;
+const MET_MAX_OBJECTS = 24; // per search, to stay under the rate limit
+const MET_NOT_PUBLIC = "not-public-domain"; // cache sentinel
+
+// Fetches one object, returning the normalized artwork or null when it isn't
+// public domain. Both outcomes are cached so repeat searches don't re-hit
+// the Met; network errors aren't cached and propagate to the caller.
+async function fetchMetObject(id) {
+  const cacheKey = `met:object:${id}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached === MET_NOT_PUBLIC ? null : cached;
+
+  const res = await axios.get(`${MET_BASE}/objects/${id}`, { timeout: 8000 });
+  const result = res.data.isPublicDomain ? normalizeMet(res.data) : null;
+  cacheSet(cacheKey, result || MET_NOT_PUBLIC);
+  return result;
+}
 
 async function searchMet(query, limit = 20) {
   const cacheKey = `met:search:${query}:${limit}`;
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
-  const searchRes = await axios.get(`${MET_BASE}/search`, {
-    params: { q: query, isPublicDomain: true },
-    timeout: 8000,
-  });
-
-  const objectIDs = (searchRes.data.objectIDs || []).slice(0, limit);
+  let objectIDs;
+  try {
+    const searchRes = await axios.get(MET_SEARCH_URL, {
+      // isPublicDomain isn't honored by search, so over-fetch a page and filter
+      // on the object records below (non-public-domain objects have no image).
+      params: { q: query, hasImages: true, limit: Math.min(limit + 4, MET_MAX_OBJECTS), offset: 0 },
+      timeout: 8000,
+    });
+    objectIDs = searchRes.data.objectIDs || [];
+  } catch (e) {
+    // 403 = the Met's edge rate-limiting us; it clears on its own. Treat it
+    // as "no Met results right now" rather than failing the whole search.
+    if (e.response?.status === 403) return [];
+    throw e;
+  }
   if (!objectIDs.length) return [];
 
-  const artworks = await Promise.all(
-    objectIDs.map((id) =>
-      axios
-        .get(`${MET_BASE}/objects/${id}`, { timeout: 8000 })
-        .then((r) => normalizeMet(r.data))
-        .catch(() => null)
-    )
-  );
+  // The Met's edge (Imperva) starts returning 403 after a few dozen object
+  // requests in quick succession, so fetch in small batches, stop once we
+  // have enough, and back off entirely on the first 403.
+  const results = [];
+  let rateLimited = false;
+  for (let i = 0; i < objectIDs.length && results.length < limit && !rateLimited; i += MET_BATCH_SIZE) {
+    const batch = await Promise.all(
+      objectIDs.slice(i, i + MET_BATCH_SIZE).map((id) =>
+        fetchMetObject(id).catch((e) => {
+          if (e.response?.status === 403) rateLimited = true;
+          return null;
+        })
+      )
+    );
+    results.push(...batch.filter((a) => a !== null && a.imageUrl));
+  }
 
-  const results = artworks.filter((a) => a !== null && a.imageUrl);
-  cacheSet(cacheKey, results);
-  return results;
+  const trimmed = results.slice(0, limit);
+  // Don't cache an empty page — it's usually a transient rate limit.
+  if (trimmed.length) cacheSet(cacheKey, trimmed);
+  return trimmed;
 }
 
 async function getMetArtwork(id) {
-  const cacheKey = `met:object:${id}`;
-  const cached = cacheGet(cacheKey);
-  if (cached) return cached;
-
-  const res = await axios.get(`${MET_BASE}/objects/${id}`, { timeout: 8000 });
-  if (!res.data.isPublicDomain) return null;
-
-  const result = normalizeMet(res.data);
-  cacheSet(cacheKey, result);
-  return result;
+  return fetchMetObject(id);
 }
 
 // ─── Art Institute of Chicago API ───────────────────────────────────────────
@@ -354,7 +383,8 @@ async function getChicagoArtwork(id) {
 
 // ─── Cleveland Museum of Art API ─────────────────────────────────────────────
 
-const CLEVELAND_BASE = "https://openaccess.clevelandart.org/api";
+// The old openaccess.clevelandart.org host no longer resolves.
+const CLEVELAND_BASE = "https://openaccess-api.clevelandart.org/api";
 
 async function searchCleveland(query, limit = 20) {
   const cacheKey = `cleveland:search:${query}:${limit}`;
@@ -421,7 +451,8 @@ async function searchWikimedia(query, limit = 20) {
   const pages = Object.values(res.data?.query?.pages || {});
   const results = pages
     .map(normalizeWikimedia)
-    .filter((a) => a && a.imageUrl && /\.(jpg|jpeg|png|gif)$/i.test(a.imageUrl))
+    // Commons now appends ?utm_source=... to image URLs, so test the path only
+    .filter((a) => a && a.imageUrl && /\.(jpg|jpeg|png|gif)$/i.test(a.imageUrl.split("?")[0]))
     .slice(0, limit);
 
   cacheSet(cacheKey, results);
