@@ -38,8 +38,6 @@ router.put("/", isAdminAuthorized, async (req, res) => {
   try {
     const { notifications, notificationEmails, ads } = req.body;
 
-    const adsterra = ads?.adsterra;
-
     const settings = await getOrCreateSettings();
 
     if (notifications) {
@@ -58,12 +56,13 @@ router.put("/", isAdminAuthorized, async (req, res) => {
         .filter(Boolean);
     }
 
-    if (adsterra) {
-      if (typeof adsterra.enabled === "boolean") settings.ads.adsterra.enabled = adsterra.enabled;
-      for (const id of AD_PLACEMENTS.adsterra) {
-        const p = adsterra.placements?.[id];
-        if (!p) continue;
-        if (typeof p.enabled === "boolean") settings.ads.adsterra.placements[id].enabled = p.enabled;
+    for (const [network, placementIds] of Object.entries(AD_PLACEMENTS)) {
+      const incoming = ads?.[network];
+      if (!incoming) continue;
+      if (typeof incoming.enabled === "boolean") settings.ads[network].enabled = incoming.enabled;
+      for (const id of placementIds) {
+        const p = incoming.placements?.[id];
+        if (typeof p?.enabled === "boolean") settings.ads[network].placements[id].enabled = p.enabled;
       }
     }
 

@@ -11,6 +11,7 @@ const router = express.Router();
 // Placement ids per network — keep in sync with models/adminSettings.js.
 export const AD_PLACEMENTS = {
   adsterra: ["marketplaceRailTop"],
+  hilltop: ["marketplaceRailSecond"],
 };
 
 /**

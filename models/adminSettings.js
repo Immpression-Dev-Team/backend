@@ -27,6 +27,14 @@ const adminSettingsSchema = new mongoose.Schema(
           },
         },
       },
+      hilltop: {
+        enabled: { type: Boolean, default: false },
+        placements: {
+          marketplaceRailSecond: {
+            enabled: { type: Boolean, default: false },
+          },
+        },
+      },
     },
   },
   { timestamps: true }
