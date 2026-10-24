@@ -14,18 +14,16 @@ const adminSettingsSchema = new mongoose.Schema(
     // Admin emails that receive notifications
     notificationEmails: [{ type: String, trim: true, lowercase: true }],
 
-    // Ad networks shown on the public website. Each network has a master
-    // switch plus per-placement switches/keys; placement ids must match
-    // AD_PLACEMENTS in routes/adsRoutes/adsRoutes.js and the web-app.
+    // On/off switches for ads on the public website: a master switch per
+    // network plus one per placement. The ad code itself lives in the
+    // web-app (src/constants/ads.js); placement ids must match it and
+    // AD_PLACEMENTS in routes/adsRoutes/adsRoutes.js.
     ads: {
       adsterra: {
         enabled: { type: Boolean, default: false },
         placements: {
           marketplaceRailTop: {
             enabled: { type: Boolean, default: false },
-            key: { type: String, trim: true, default: "" },
-            // Script URL from the Adsterra code (their ad domains rotate).
-            src: { type: String, trim: true, default: "" },
           },
         },
       },

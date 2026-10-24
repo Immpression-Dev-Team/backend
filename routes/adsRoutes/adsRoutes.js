@@ -1,7 +1,7 @@
 // routes/adsRoutes/adsRoutes.js
-// Public, read-only ad config for the website. Exposes only placements that
-// are switched on (network + placement) and have a key, so the web-app never
-// sees admin-only settings.
+// Public, read-only ad config for the website: which placements admins have
+// switched on (network master switch + placement switch). The ad code itself
+// lives in the web-app.
 
 import express from "express";
 import AdminSettings from "../../models/adminSettings.js";
@@ -15,7 +15,7 @@ export const AD_PLACEMENTS = {
 
 /**
  * GET /api/ads/config
- * → { success, data: { adsterra: { marketplaceRailTop: { key, src } } } }
+ * → { success, data: { adsterra: { marketplaceRailTop: true } } }
  */
 router.get("/config", async (_req, res) => {
   try {
@@ -27,9 +27,9 @@ router.get("/config", async (_req, res) => {
       if (!cfg?.enabled) continue;
       for (const id of placementIds) {
         const p = cfg.placements?.[id];
-        if (p?.enabled && p.key && p.src) {
+        if (p?.enabled) {
           data[network] = data[network] || {};
-          data[network][id] = { key: p.key, src: p.src };
+          data[network][id] = true;
         }
       }
     }
