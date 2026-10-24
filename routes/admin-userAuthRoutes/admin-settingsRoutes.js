@@ -6,8 +6,21 @@ import AdminSettings from "../../models/adminSettings.js";
 import UserModel from "../../models/users.js";
 import ImageModel from "../../models/images.js";
 import OrderModel from "../../models/orders.js";
+import { AD_PLACEMENTS } from "../adsRoutes/adsRoutes.js";
 
 const router = express.Router();
+
+// Adsterra unit keys are 32 hex characters; the script URL must be https.
+const ADSTERRA_KEY_RE = /^[a-f0-9]{32}$/i;
+
+function isValidAdScriptUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && value.length <= 500;
+  } catch {
+    return false;
+  }
+}
 
 // Settings are only accessible to full-access admins (Content Editor is excluded).
 router.use(isAdminAuthorized, requireRole(FULL_ACCESS_ROLES));
@@ -35,7 +48,26 @@ router.get("/", isAdminAuthorized, async (_req, res) => {
 // ─── PUT /api/admin/settings ─────────────────────────────────────────────────
 router.put("/", isAdminAuthorized, async (req, res) => {
   try {
-    const { notifications, notificationEmails } = req.body;
+    const { notifications, notificationEmails, ads } = req.body;
+
+    const adsterra = ads?.adsterra;
+    if (adsterra?.placements) {
+      for (const id of AD_PLACEMENTS.adsterra) {
+        const { key, src } = adsterra.placements[id] || {};
+        if (typeof key === "string" && key.trim() && !ADSTERRA_KEY_RE.test(key.trim())) {
+          return res.status(400).json({
+            success: false,
+            error: "Adsterra keys are 32 characters (letters a–f and numbers).",
+          });
+        }
+        if (typeof src === "string" && src.trim() && !isValidAdScriptUrl(src.trim())) {
+          return res.status(400).json({
+            success: false,
+            error: "Adsterra script URL must be a valid https:// address.",
+          });
+        }
+      }
+    }
 
     const settings = await getOrCreateSettings();
 
@@ -53,6 +85,17 @@ router.put("/", isAdminAuthorized, async (req, res) => {
       settings.notificationEmails = notificationEmails
         .map((e) => e.trim().toLowerCase())
         .filter(Boolean);
+    }
+
+    if (adsterra) {
+      if (typeof adsterra.enabled === "boolean") settings.ads.adsterra.enabled = adsterra.enabled;
+      for (const id of AD_PLACEMENTS.adsterra) {
+        const p = adsterra.placements?.[id];
+        if (!p) continue;
+        if (typeof p.enabled === "boolean") settings.ads.adsterra.placements[id].enabled = p.enabled;
+        if (typeof p.key === "string") settings.ads.adsterra.placements[id].key = p.key.trim().toLowerCase();
+        if (typeof p.src === "string") settings.ads.adsterra.placements[id].src = p.src.trim();
+      }
     }
 
     await settings.save();

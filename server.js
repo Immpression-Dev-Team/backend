@@ -54,6 +54,7 @@ import referralRoutes from "./routes/referralRoutes/referralRoutes.js";
 
 // Public domain art (proxy layer — no DB interaction)
 import publicArtRoutes from "./routes/publicArtRoutes/publicArtRoutes.js";
+import adsRoutes from "./routes/adsRoutes/adsRoutes.js";
 
 // Unified search (marketplace + public domain)
 import searchRoutes from "./routes/searchRoutes/searchRoutes.js";
@@ -222,6 +223,9 @@ app.use("/api/web", webDonationsRoutes);
 
 // Public domain art (proxy — no DB)
 app.use("/public-art", publicArtRoutes);
+
+// Public ad config for the website (admin-controlled via settings)
+app.use("/api/ads", adsRoutes);
 
 // Unified search
 app.use("/api/search", searchRoutes);
